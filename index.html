@@ -18,7 +18,8 @@
   button.on{background:var(--acc2);color:#04200f;border-color:var(--acc2)}
   button:active,label.btn:active{transform:scale(.98)}
   input[type=file]{display:none}
-  .stage{background:#000;border:1px solid var(--line);border-radius:14px;overflow:hidden;position:relative;min-height:180px;display:grid;place-items:center}
+  [hidden]{display:none!important}
+  .stage{background:#000;border:1px solid var(--line);border-radius:14px;overflow:hidden;position:relative;min-height:180px;display:block}
   #view{width:100%;height:auto;display:block;touch-action:manipulation}
   #empty{color:var(--mut);padding:40px 20px;text-align:center}
   .busy{position:absolute;inset:0;background:#000a;display:none;place-items:center;text-align:center;padding:20px;font-weight:600}
@@ -104,7 +105,7 @@ function busy(on,t){ $('busy').classList.toggle('show',on); if(t)$('busyTxt').te
 function msg(t){ $('msg').textContent=t||''; }
 
 /* ---------- Càrrega d'imatge ---------- */
-function loadFile(f){
+function loadFile(f,inp){
   if(!f) return;
   const url=URL.createObjectURL(f), im=new Image();
   im.onload=()=>{
@@ -112,16 +113,16 @@ function loadFile(f){
     base.width=view.width=Math.round(im.naturalWidth*s);
     base.height=view.height=Math.round(im.naturalHeight*s);
     bctx.drawImage(im,0,0,base.width,base.height);
-    URL.revokeObjectURL(url);
+    URL.revokeObjectURL(url); if(inp) inp.value='';
     hasImg=true; $('empty').hidden=true; view.hidden=false;
-    preds=[]; excluded.clear(); selClass=null; blobs=[]; adj=0; picked=null; $('sw').style.background='#444';
+    preds=[]; shown=[]; colorTotal=0; excluded.clear(); selClass=null; blobs=[]; adj=0; picked=null; ctx.drawImage(base,0,0); $('sw').style.background='#444';
     updateAdj(); run();
   };
-  im.onerror=()=>msg('No s\'ha pogut obrir la imatge.');
+  im.onerror=()=>{ if(inp) inp.value=''; msg('No s\'ha pogut obrir la imatge.'); };
   im.src=url;
 }
-$('cam').onchange=e=>{loadFile(e.target.files[0]);e.target.value=''};
-$('gal').onchange=e=>{loadFile(e.target.files[0]);e.target.value=''};
+$('cam').onchange=e=>loadFile(e.target.files[0],e.target);
+$('gal').onchange=e=>loadFile(e.target.files[0],e.target);
 
 /* ---------- Mode ---------- */
 function setMode(m){
@@ -241,7 +242,7 @@ function draw(){
 }
 function label(t,x,y,fs){
   const w=ctx.measureText(t).width+fs*.6;
-  ctx.fillStyle='#000c'; ctx.beginPath(); ctx.roundRect(x-w/2,y-fs*.7,w,fs*1.4,fs*.5); ctx.fill();
+  ctx.fillStyle='#000c'; ctx.fillRect(x-w/2,y-fs*.7,w,fs*1.4);
   ctx.fillStyle='#fff'; ctx.fillText(t,x,y);
 }
 function total(n){
