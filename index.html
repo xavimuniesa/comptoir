@@ -41,6 +41,7 @@
   .sw{width:34px;height:34px;border-radius:8px;border:2px solid #fff6;background:#444;flex:none}
   .chk{display:flex;gap:8px;align-items:center;font-size:.95rem}
   .msg{font-size:.88rem;color:var(--mut);min-height:1.2em}
+  .modes button{min-width:0;padding:10px 4px;font-size:.85rem}
 </style>
 </head>
 <body>
@@ -55,9 +56,9 @@
     <label class="btn">🖼️ Galeria<input id="gal" type="file" accept="image/*"></label>
   </div>
 
-  <div class="row">
-    <button id="mRep" class="on">🔁 Repeticions</button>
-    <button id="mAi">🤖 IA</button>
+  <div class="row modes">
+    <button id="mAuto" class="on">✨ Automàtic</button>
+    <button id="mRep">🔁 Plantilla</button>
     <button id="mCol">🎨 Color</button>
   </div>
 
@@ -75,16 +76,16 @@
   </div>
   <div class="msg" id="msg"></div>
 
-  <section class="panel" id="pRep">
+  <section class="panel" id="pAuto">
+    <div class="msg" style="margin:0">Compta sol, sense dir-li què és. Pots fer la foto i ja està.</div>
+    <div class="chips" id="autoChips"></div>
+    <div class="msg" id="autoWhy" style="margin:0"></div>
+  </section>
+
+  <section class="panel" id="pRep" hidden>
     <div class="msg" style="margin:0">Compta qualsevol cosa que es repeteixi, sense saber què és. <b>Toca dues vegades</b> la foto: primer la cantonada superior esquerra i després la inferior dreta d'<b>UN sol element</b> (millor una part que es vegi bé en tots, com el mànec). L'app en buscarà tots els que s'hi assemblin.</div>
     <div class="ctl"><span>Semblança mínima: <b id="simv">60%</b></span><input id="sim" type="range" min="25" max="95" value="60"></div>
     <button id="resetSel">↺ Triar un altre element</button>
-  </section>
-
-  <section class="panel" id="pAi" hidden>
-    <div class="msg" style="margin:0">Detecta objectes habituals (persones, ampolles, fruites, tasses, cotxes, llibres…). Toca un requadre per excloure'l o tornar-lo a incloure.</div>
-    <div class="ctl"><span>Sensibilitat mínima: <b id="confv">40%</b></span><input id="conf" type="range" min="10" max="90" value="40"></div>
-    <div class="chips" id="chips"></div>
   </section>
 
   <section class="panel" id="pCol" hidden>
@@ -102,12 +103,11 @@ const view=$('view'), ctx=view.getContext('2d');
 const base=document.createElement('canvas'), bctx=base.getContext('2d',{willReadFrequently:true});
 const maskCv=document.createElement('canvas');
 const MAXD=1000;
-let hasImg=false, mode='rep', model=null, preds=[], selClass=null, excluded=new Set(), shown=[];
+let hasImg=false, mode='auto';
 let picked=null, blobs=[], adj=0, colorTotal=0;
+let autoRes=null, autoSel=0, autoS=1;
 let tpl=null, corner=null, scoreMap=null, repHits=[], repTotal=0;
 
-const CA={person:'persona',bicycle:'bicicleta',car:'cotxe',motorcycle:'moto',airplane:'avió',bus:'autobús',train:'tren',truck:'camió',boat:'vaixell','traffic light':'semàfor','bench':'banc',bird:'ocell',cat:'gat',dog:'gos',horse:'cavall',sheep:'ovella',cow:'vaca',elephant:'elefant',bear:'ós',zebra:'zebra',giraffe:'girafa',backpack:'motxilla',umbrella:'paraigua',handbag:'bossa',tie:'corbata',suitcase:'maleta',frisbee:'frisbee',skis:'esquís',snowboard:'snowboard','sports ball':'pilota',kite:'estel',bottle:'ampolla','wine glass':'copa',cup:'tassa',fork:'forquilla',knife:'ganivet',spoon:'cullera',bowl:'bol',banana:'plàtan',apple:'poma',sandwich:'entrepà',orange:'taronja',broccoli:'bròquil',carrot:'pastanaga','hot dog':'frankfurt',pizza:'pizza',donut:'dònut',cake:'pastís',chair:'cadira',couch:'sofà','potted plant':'planta',bed:'llit','dining table':'taula',toilet:'vàter',tv:'televisor',laptop:'portàtil',mouse:'ratolí',remote:'comandament',keyboard:'teclat','cell phone':'mòbil',microwave:'microones',oven:'forn',toaster:'torradora',sink:'pica',refrigerator:'nevera',book:'llibre',clock:'rellotge',vase:'gerro',scissors:'tisores','teddy bear':'ós de peluix','hair drier':'assecador',toothbrush:'raspall de dents'};
-const ca=n=>CA[n]||n;
 
 function busy(on,t){ $('busy').classList.toggle('show',on); if(t)$('busyTxt').textContent=t; }
 function msg(t){ $('msg').textContent=t||''; }
@@ -123,7 +123,7 @@ function loadFile(f,inp){
     bctx.drawImage(im,0,0,base.width,base.height);
     URL.revokeObjectURL(url); if(inp) inp.value='';
     hasImg=true; $('empty').hidden=true; view.hidden=false;
-    preds=[]; shown=[]; colorTotal=0; tpl=null; corner=null; scoreMap=null; repHits=[]; repTotal=0; excluded.clear(); selClass=null; blobs=[]; adj=0; picked=null; ctx.drawImage(base,0,0); $('sw').style.background='#444';
+    colorTotal=0; autoRes=null; autoSel=0; tpl=null; corner=null; scoreMap=null; repHits=[]; repTotal=0; blobs=[]; adj=0; picked=null; ctx.drawImage(base,0,0); $('sw').style.background='#444';
     updateAdj(); run();
   };
   im.onerror=()=>{ if(inp) inp.value=''; msg('No s\'ha pogut obrir la imatge.'); };
@@ -135,53 +135,17 @@ $('gal').onchange=e=>loadFile(e.target.files[0],e.target);
 /* ---------- Mode ---------- */
 function setMode(m){
   mode=m;
-  $('mRep').classList.toggle('on',m==='rep'); $('mAi').classList.toggle('on',m==='ai'); $('mCol').classList.toggle('on',m==='col');
-  $('pRep').hidden=m!=='rep'; $('pAi').hidden=m!=='ai'; $('pCol').hidden=m!=='col';
+  $('mAuto').classList.toggle('on',m==='auto'); $('mRep').classList.toggle('on',m==='rep'); $('mCol').classList.toggle('on',m==='col');
+  $('pAuto').hidden=m!=='auto'; $('pRep').hidden=m!=='rep'; $('pCol').hidden=m!=='col';
   adj=0; updateAdj(); run();
 }
-$('mRep').onclick=()=>setMode('rep'); $('mAi').onclick=()=>setMode('ai'); $('mCol').onclick=()=>setMode('col');
+$('mAuto').onclick=()=>setMode('auto'); $('mRep').onclick=()=>setMode('rep'); $('mCol').onclick=()=>setMode('col');
 function run(){
   if(!hasImg) return;
-  if(mode==='rep'){ if(tpl) runRep(); else { draw(); msg('Toca la cantonada superior esquerra d\'UN element.'); } }
-  else if(mode==='ai') runAI();
+  if(mode==='auto') runAuto();
+  else if(mode==='rep'){ if(tpl) runRep(); else { draw(); msg('Toca la cantonada superior esquerra d\'UN element.'); } }
   else { if(picked) runColor(); else { draw(); msg('Toca un exemplar a la imatge per triar-ne el color.'); } }
 }
-
-/* ---------- Mode IA (COCO-SSD) ---------- */
-function loadScript(src){return new Promise((ok,ko)=>{const s=document.createElement('script');s.src=src;s.onload=ok;s.onerror=()=>ko(new Error('No es pot descarregar '+src));document.head.appendChild(s)})}
-async function loadModel(){
-  if(model) return model;
-  await loadScript('https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js');
-  await loadScript('https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js');
-  model=await cocoSsd.load({base:'mobilenet_v2'});
-  return model;
-}
-async function runAI(){
-  if(!hasImg) return;
-  try{
-    busy(true,model?'Detectant…':'Carregant el model d\'IA (només el primer cop, uns 15 MB)…');
-    await loadModel();
-    busy(true,'Detectant…');
-    preds=await model.detect(base,100,0.1);
-    excluded.clear(); selClass=null;
-    refreshAI();
-  }catch(e){ msg('Error: '+e.message+' (cal connexió a internet per carregar el model)'); }
-  finally{ busy(false); }
-}
-function refreshAI(){
-  const th=$('conf').value/100; $('confv').textContent=$('conf').value+'%';
-  const ok=preds.filter(p=>p.score>=th), counts={};
-  ok.forEach(p=>counts[p.class]=(counts[p.class]||0)+1);
-  const names=Object.keys(counts).sort((a,b)=>counts[b]-counts[a]);
-  if(!selClass||(selClass!=='*'&&!counts[selClass])) selClass='*';
-  $('chips').innerHTML='';
-  { const c=document.createElement('div'); c.className='chip'+(selClass==='*'?' on':''); c.textContent='Tots · '+ok.length; c.onclick=()=>{selClass='*';excluded.clear();refreshAI()}; $('chips').appendChild(c); }
-  names.forEach(n=>{const c=document.createElement('div');c.className='chip'+(n===selClass?' on':'');c.textContent=ca(n)+' · '+counts[n];c.onclick=()=>{selClass=n;excluded.clear();refreshAI()};$('chips').appendChild(c)});
-  shown=selClass==='*'?ok:ok.filter(p=>p.class===selClass);
-  draw();
-  msg(names.length?'':'No s\'ha detectat cap objecte conegut. Prova el mode «Per color» o baixa la sensibilitat.');
-}
-$('conf').oninput=()=>{ if(preds.length) refreshAI(); };
 
 /* ---------- Mode color ---------- */
 function runColor(){
@@ -297,6 +261,179 @@ function drawRep(fs){
 $('sim').oninput=()=>{ if(scoreMap){ collectRep(); draw(); } else $('simv').textContent=$('sim').value+'%'; };
 $('resetSel').onclick=()=>{ tpl=null; corner=null; scoreMap=null; repHits=[]; repTotal=0; if(hasImg){ draw(); msg('Toca la cantonada superior esquerra d\'UN element.'); } };
 
+/* ---------- Mode automàtic (sense instruccions, sense identificar res) ---------- */
+function boxBlur(a,W,H,r){
+  const t=new Float32Array(a.length), o=new Float32Array(a.length), k=2*r+1;
+  for(let y=0;y<H;y++) for(let x=0;x<W;x++){ let s=0; for(let q=-r;q<=r;q++){ s+=a[y*W+Math.min(W-1,Math.max(0,x+q))]; } t[y*W+x]=s/k; }
+  for(let y=0;y<H;y++) for(let x=0;x<W;x++){ let s=0; for(let q=-r;q<=r;q++){ s+=t[Math.min(H-1,Math.max(0,y+q))*W+x]; } o[y*W+x]=s/k; }
+  return o;
+}
+function otsuThr(v,max){
+  const B=256,h=new Float64Array(B); for(let i=0;i<v.length;i++) h[Math.min(B-1,(v[i]*(B-1)/max)|0)]++;
+  let sum=0; for(let i=0;i<B;i++) sum+=i*h[i];
+  let wB=0,sB=0,best=-1,th=0; const tot=v.length;
+  for(let i=0;i<B;i++){ wB+=h[i]; if(!wB) continue; const wF=tot-wB; if(!wF) break; sB+=i*h[i]; const mB=sB/wB,mF=(sum-sB)/wF,bv=wB*wF*(mB-mF)*(mB-mF); if(bv>best){best=bv;th=i;} }
+  return th*max/(B-1);
+}
+function runsOf(get,len,gapMax,minRun){
+  const raw=[]; let s=-1;
+  for(let i=0;i<=len;i++){ const on=i<len&&get(i); if(on&&s<0) s=i; else if(!on&&s>=0){ raw.push([s,i-1]); s=-1; } }
+  const m=[]; for(const r of raw){ if(m.length&&r[0]-m[m.length-1][1]-1<=gapMax) m[m.length-1][1]=r[1]; else m.push([r[0],r[1]]); }
+  return m.filter(r=>r[1]-r[0]+1>=minRun);
+}
+function scanLines(fg,W,H,horizontal){
+  const nL=horizontal?H:W, len=horizontal?W:H, gapMax=Math.max(2,Math.round(len*0.012)), minRun=Math.max(3,Math.round(len*0.02));
+  const cnt=new Int32Array(nL);
+  for(let l=0;l<nL;l++) cnt[l]=runsOf(horizontal?(i=>fg[l*W+i]):(i=>fg[i*W+l]),len,gapMax,minRun).length;
+  const mf=new Int32Array(nL);
+  for(let l=0;l<nL;l++){ const w=[]; for(let q=-2;q<=2;q++) w.push(cnt[Math.min(nL-1,Math.max(0,l+q))]); w.sort((a,b)=>a-b); mf[l]=w[2]; }
+  let best=0; for(let l=0;l<nL;l++) if(mf[l]>best) best=mf[l];
+  const ls=[]; for(let l=0;l<nL;l++) if(mf[l]===best&&cnt[l]===best) ls.push(l);
+  const line=ls.length?ls[ls.length>>1]:0;
+  const runs=runsOf(horizontal?(i=>fg[line*W+i]):(i=>fg[i*W+line]),len,gapMax,minRun);
+  return {count:best,line,runs,horizontal};
+}
+function periodic(g,W,H,bb,vertical){
+  // perfil d'energia de vores dins la caixa; autocorrelació -> període -> nombre d'elements
+  const x0=bb.x0,x1=bb.x1,y0=bb.y0,y1=bb.y1, a0=vertical?x0:y0, a1=vertical?x1:y1, L=a1-a0+1;
+  if(L<20) return null;
+  const P=new Float64Array(L);
+  for(let y=Math.max(1,y0);y<=Math.min(H-2,y1);y++) for(let x=Math.max(1,x0);x<=Math.min(W-2,x1);x++){
+    const e=vertical?Math.abs(g[y*W+x+1]-g[y*W+x-1]):Math.abs(g[(y+1)*W+x]-g[(y-1)*W+x]);
+    P[(vertical?x:y)-a0]+=e;
+  }
+  let m=0; for(let i=0;i<L;i++) m+=P[i]; m/=L;
+  const Q=new Float64Array(L); for(let i=0;i<L;i++){ const a=P[Math.max(0,i-1)],b=P[i],c=P[Math.min(L-1,i+1)]; Q[i]=(a+2*b+c)/4-m; }
+  let e0=0; for(let i=0;i<L;i++) e0+=Q[i]*Q[i]; e0/=L; if(e0<=0) return null;
+  const lmin=Math.max(5,Math.round(L/14)), lmax=Math.floor(L/1.9);
+  if(lmax<=lmin+2) return null;
+  const R=new Float64Array(lmax+2);
+  for(let l=lmin-1;l<=lmax+1;l++){ let s=0; for(let i=0;i+l<L;i++) s+=Q[i]*Q[i+l]; R[l]=(s/(L-l))/e0; }
+  const pk=[]; for(let l=lmin;l<=lmax;l++) if(R[l]>R[l-1]&&R[l]>=R[l+1]&&R[l]>0.2) pk.push(l);
+  if(!pk.length) return null;
+  let rmax=0; for(const l of pk) if(R[l]>rmax) rmax=R[l];
+  const strong=pk.filter(l=>R[l]>=0.6*rmax);
+  const main=strong.find(l=>R[l]>=0.8*rmax);
+  const counts=[...new Set(strong.map(l=>Math.round(L/l)))].filter(n=>n>=2);
+  return {r:rmax,lag:main,count:Math.round(L/main),counts,a0,L,vertical,bb};
+}
+function autoAnalyze(d,W,H){
+  const N=W*H;
+  // fons = mediana de la vora de la imatge
+  const bw=Math.max(2,Math.round(Math.min(W,H)*0.03)), bs=[[],[],[]];
+  for(let y=0;y<H;y++) for(let x=0;x<W;x++) if(x<bw||x>=W-bw||y<bw||y>=H-bw){ const j=(y*W+x)*4; bs[0].push(d[j]); bs[1].push(d[j+1]); bs[2].push(d[j+2]); }
+  const med=a=>{a.sort((p,q)=>p-q);return a[a.length>>1]}; const bg=[med(bs[0]),med(bs[1]),med(bs[2])];
+  let dist=new Float32Array(N), gray=new Float32Array(N);
+  for(let i=0;i<N;i++){ const j=i*4,a=d[j]-bg[0],b=d[j+1]-bg[1],c=d[j+2]-bg[2]; dist[i]=Math.sqrt(a*a+b*b+c*c); gray[i]=0.299*d[j]+0.587*d[j+1]+0.114*d[j+2]; }
+  dist=boxBlur(dist,W,H,1);
+  const thr=Math.max(28,otsuThr(dist,442));
+  const fg=new Uint8Array(N); for(let i=0;i<N;i++) fg[i]=dist[i]>thr?1:0;
+  // components connexos
+  const seen=new Uint8Array(N), stack=new Int32Array(N), minA=Math.max(12,Math.round(N*0.0004)), comps=[];
+  for(let s=0;s<N;s++){
+    if(!fg[s]||seen[s]) continue;
+    let sp=0; stack[sp++]=s; seen[s]=1; let area=0,sx=0,sy=0,x0=W,y0=H,x1=0,y1=0;
+    while(sp){ const p=stack[--sp],x=p%W,y=(p/W)|0; area++; sx+=x; sy+=y; if(x<x0)x0=x; if(x>x1)x1=x; if(y<y0)y0=y; if(y>y1)y1=y;
+      if(x>0&&fg[p-1]&&!seen[p-1]){seen[p-1]=1;stack[sp++]=p-1} if(x<W-1&&fg[p+1]&&!seen[p+1]){seen[p+1]=1;stack[sp++]=p+1}
+      if(y>0&&fg[p-W]&&!seen[p-W]){seen[p-W]=1;stack[sp++]=p-W} if(y<H-1&&fg[p+W]&&!seen[p+W]){seen[p+W]=1;stack[sp++]=p+W} }
+    if(area>=minA) comps.push({area,cx:sx/area,cy:sy/area,x0,y0,x1,y1,n:1});
+  }
+  const tot=comps.reduce((s,c)=>s+c.area,0), maxA=comps.reduce((m,c)=>Math.max(m,c.area),0);
+  const merged=!comps.length||maxA/tot>0.6;
+  if(comps.length>2){ const a=comps.map(c=>c.area).sort((p,q)=>p-q),mA=a[a.length>>1]; comps.forEach(c=>{ if(c.area>1.6*mA) c.n=Math.max(1,Math.round(c.area/mA)); }); }
+  const ccCount=comps.reduce((s,c)=>s+c.n,0);
+  const cands=[];
+  if(ccCount>=1) cands.push({kind:'cc',count:ccCount,comps});
+  // escaneig per files/columnes
+  const sh=scanLines(fg,W,H,true), sv=scanLines(fg,W,H,false), sc=sh.count>=sv.count?sh:sv;
+  if(sc.count>=2) cands.push({kind:'scan',count:sc.count,scan:sc});
+  // periodicitat dins la caixa del primer pla
+  let per=null;
+  if(comps.length){
+    const bb={x0:Math.min(...comps.map(c=>c.x0)),y0:Math.min(...comps.map(c=>c.y0)),x1:Math.max(...comps.map(c=>c.x1)),y1:Math.max(...comps.map(c=>c.y1))};
+    const pv=periodic(gray,W,H,bb,true), ph=periodic(gray,W,H,bb,false);
+    per=(pv&&(!ph||pv.r>=ph.r))?pv:ph;
+    if(per&&per.r>=0.3&&per.count>=2){
+      cands.push({kind:'per',count:per.count,per});
+      per.counts.forEach(n=>{ if(n!==per.count) cands.push({kind:'per',count:n,per:Object.assign({},per,{count:n}),alt:true}); });
+    }
+  }
+  let chosen=0;
+  const pick=k=>cands.findIndex(c=>c.kind===k&&!c.alt);
+  if(!merged&&ccCount>=2) chosen=pick('cc');
+  else if(pick('per')>=0) chosen=pick('per');
+  else if(pick('scan')>=0) chosen=pick('scan');
+  else chosen=Math.max(0,pick('cc'));
+  return {cands,chosen,merged,ccCount,thr,bg};
+}
+
+
+const AM=360; // mida màxima d'anàlisi (px)
+const KIND_TXT={cc:'separats',scan:'en fila',per:'patró repetit'};
+function runAuto(){
+  if(!hasImg) return;
+  busy(true,'Analitzant la imatge…');
+  setTimeout(()=>{
+    try{
+      autoS=Math.min(1,AM/Math.max(base.width,base.height));
+      const W=Math.round(base.width*autoS), H=Math.round(base.height*autoS);
+      const c=document.createElement('canvas'); c.width=W; c.height=H;
+      const cc=c.getContext('2d',{willReadFrequently:true}); cc.drawImage(base,0,0,W,H);
+      autoRes=autoAnalyze(cc.getImageData(0,0,W,H).data,W,H);
+      autoSel=autoRes.chosen; adj=0; $('adjv').textContent='±0';
+      refreshAuto();
+    }catch(e){ msg('Error: '+e.message); }
+    finally{ busy(false); }
+  },30);
+}
+function refreshAuto(){
+  const box=$('autoChips'); box.innerHTML='';
+  if(!autoRes||!autoRes.cands.length){
+    draw(); $('autoWhy').textContent='';
+    msg('No he detectat cap element. Prova amb una foto amb més contrast o amb els altres modes.'); return;
+  }
+  // chips: l'opció triada primer; un sol chip per nombre
+  const order=autoRes.cands.map((c,i)=>i).sort((a,b)=>(a===autoSel?-1:b===autoSel?1:a-b));
+  const seen=new Set(), items=[];
+  order.forEach(i=>{ const c=autoRes.cands[i]; if(seen.has(c.count)) return; seen.add(c.count); items.push([i,c]); });
+  items.sort((a,b)=>a[1].count-b[1].count).forEach(([i,c])=>{
+    const el=document.createElement('div'); el.className='chip'+(i===autoSel?' on':'');
+    el.textContent=c.count+' · '+KIND_TXT[c.kind];
+    el.onclick=()=>{ autoSel=i; adj=0; $('adjv').textContent='±0'; refreshAuto(); };
+    box.appendChild(el);
+  });
+  $('autoWhy').textContent='Si no és el nombre correcte, toca una altra opció o corregeix-lo amb + / −.';
+  draw(); msg('');
+}
+function drawAuto(fs){
+  if(!autoRes||!autoRes.cands.length){ total(0); return; }
+  const c=autoRes.cands[autoSel], k=1/autoS; let n=0;
+  if(c.kind==='cc'){
+    c.comps.forEach(b=>{
+      ctx.strokeStyle='#ffb020'; ctx.beginPath();
+      ctx.arc(b.cx*k,b.cy*k,Math.max(fs*.9,Math.sqrt(b.area/Math.PI)*1.1*k),0,7); ctx.stroke();
+      n+=b.n; label(b.n>1?'×'+b.n:String(n),b.cx*k,b.cy*k,fs);
+    });
+  } else if(c.kind==='scan'){
+    const s=c.scan; ctx.strokeStyle='#3ddc97'; ctx.setLineDash([8,6]); ctx.beginPath();
+    if(s.horizontal){ ctx.moveTo(0,s.line*k); ctx.lineTo(view.width,s.line*k); } else { ctx.moveTo(s.line*k,0); ctx.lineTo(s.line*k,view.height); }
+    ctx.stroke(); ctx.setLineDash([]);
+    s.runs.forEach((r,i)=>{ const m=(r[0]+r[1])/2*k; label(String(i+1),s.horizontal?m:s.line*k,s.horizontal?s.line*k:m,fs); });
+  } else {
+    const p=c.per, bb=p.bb, step=p.L/c.count;
+    ctx.strokeStyle='#3ddc97';
+    ctx.strokeRect(bb.x0*k,bb.y0*k,(bb.x1-bb.x0)*k,(bb.y1-bb.y0)*k);
+    ctx.setLineDash([6,6]);
+    for(let i=0;i<c.count;i++){
+      const a=p.a0+i*step, mid=(a+step/2)*k, cx=(bb.x0+bb.x1)/2*k, cy=(bb.y0+bb.y1)/2*k;
+      if(i>0){ ctx.beginPath(); if(p.vertical){ ctx.moveTo(a*k,bb.y0*k); ctx.lineTo(a*k,bb.y1*k); } else { ctx.moveTo(bb.x0*k,a*k); ctx.lineTo(bb.x1*k,a*k); } ctx.stroke(); }
+      label(String(i+1),p.vertical?mid:cx,p.vertical?cy:mid,fs);
+    }
+    ctx.setLineDash([]);
+  }
+  total(c.count);
+}
+
 /* ---------- Dibuix ---------- */
 function draw(){
   if(!hasImg) return;
@@ -304,15 +441,9 @@ function draw(){
   const lw=Math.max(2,view.width/300), fs=Math.max(12,view.width/45);
   ctx.lineWidth=lw; ctx.font='700 '+fs+'px system-ui,sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
   let n=0;
-  if(mode==='rep'){ drawRep(fs); }
-  else if(mode==='ai'){
-    shown.forEach(p=>{
-      const off=excluded.has(p); const [x,y,w,h]=p.bbox;
-      ctx.strokeStyle=off?'#ff5a5a88':'#3ddc97'; ctx.setLineDash(off?[8,6]:[]); ctx.strokeRect(x,y,w,h);
-      if(!off){ n++; label(String(n),x+fs*.7,y+fs*.7,fs); }
-    });
-    ctx.setLineDash([]); total(n);
-  } else {
+  if(mode==='auto'){ drawAuto(fs); }
+  else if(mode==='rep'){ drawRep(fs); }
+  else {
     if($('showmask').checked&&maskCv.width) ctx.drawImage(maskCv,0,0);
     let k=0;
     blobs.forEach(b=>{
@@ -331,7 +462,7 @@ function label(t,x,y,fs){
 function total(n){
   const t=Math.max(0,n+adj);
   $('total').textContent=t;
-  $('what').textContent=mode==='ai'&&selClass&&selClass!=='*'?ca(selClass):'elements';
+  $('what').textContent='elements';
 }
 function updateAdj(){ $('adjv').textContent=adj===0?'±0':(adj>0?'+'+adj:adj); if(hasImg){ if(mode==='col') total(colorTotal); else draw(); } }
 $('plus').onclick=()=>{adj++;updateAdj()}; $('minus').onclick=()=>{adj--;updateAdj()};
@@ -340,12 +471,9 @@ $('plus').onclick=()=>{adj++;updateAdj()}; $('minus').onclick=()=>{adj--;updateA
 view.addEventListener('click',e=>{
   if(!hasImg) return;
   const r=view.getBoundingClientRect(), x=(e.clientX-r.left)*view.width/r.width, y=(e.clientY-r.top)*view.height/r.height;
+  if(mode==='auto') return;
   if(mode==='rep'){ repTap(x,y); return; }
-  if(mode==='ai'){
-    let best=null;
-    shown.forEach(p=>{const [a,b,w,h]=p.bbox; if(x>=a&&x<=a+w&&y>=b&&y<=b+h&&(!best||w*h<best.bbox[2]*best.bbox[3])) best=p;});
-    if(best){ excluded.has(best)?excluded.delete(best):excluded.add(best); draw(); }
-  } else {
+  {
     const d=bctx.getImageData(Math.max(0,x-2)|0,Math.max(0,y-2)|0,5,5).data; let r0=0,g=0,b=0,c=d.length/4;
     for(let i=0;i<d.length;i+=4){r0+=d[i];g+=d[i+1];b+=d[i+2]}
     picked=[r0/c,g/c,b/c].map(Math.round);
