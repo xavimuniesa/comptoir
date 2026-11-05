@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="ca">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#14181f">
+<title>Comptador d'unitats</title>
+<style>
+  :root{--bg:#14181f;--card:#1d232d;--line:#2c3542;--txt:#eef2f7;--mut:#93a0b2;--acc:#ffb020;--acc2:#3ddc97}
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  body{margin:0;background:var(--bg);color:var(--txt);font:16px/1.4 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;padding:max(12px,env(safe-area-inset-top)) 12px 40px}
+  main{max-width:760px;margin:0 auto;display:grid;gap:12px}
+  h1{font-size:1.25rem;margin:4px 0 0}
+  .sub{color:var(--mut);font-size:.9rem;margin:0}
+  .row{display:flex;gap:8px;flex-wrap:wrap}
+  button,label.btn{background:var(--card);color:var(--txt);border:1px solid var(--line);border-radius:12px;padding:12px 14px;font:inherit;font-weight:600;cursor:pointer;flex:1;text-align:center;min-width:120px}
+  button.primary,label.btn.primary{background:var(--acc);color:#1a1200;border-color:var(--acc)}
+  button.on{background:var(--acc2);color:#04200f;border-color:var(--acc2)}
+  button:active,label.btn:active{transform:scale(.98)}
+  input[type=file]{display:none}
+  .stage{background:#000;border:1px solid var(--line);border-radius:14px;overflow:hidden;position:relative;min-height:180px;display:grid;place-items:center}
+  #view{width:100%;height:auto;display:block;touch-action:manipulation}
+  #empty{color:var(--mut);padding:40px 20px;text-align:center}
+  .busy{position:absolute;inset:0;background:#000a;display:none;place-items:center;text-align:center;padding:20px;font-weight:600}
+  .busy.show{display:grid}
+  .result{display:flex;align-items:center;justify-content:space-between;gap:12px;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px 16px}
+  .big{font-size:3.4rem;font-weight:800;line-height:1;color:var(--acc);font-variant-numeric:tabular-nums}
+  .big small{display:block;font-size:.8rem;color:var(--mut);font-weight:500;margin-top:4px}
+  .adj{display:flex;align-items:center;gap:8px}
+  .adj button{min-width:48px;flex:none;padding:10px 0;font-size:1.3rem}
+  .adj span{min-width:34px;text-align:center;color:var(--mut)}
+  .panel{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px;display:grid;gap:10px}
+  .panel[hidden]{display:none}
+  .ctl{display:grid;gap:4px;font-size:.9rem;color:var(--mut)}
+  .ctl b{color:var(--txt);font-weight:600}
+  input[type=range]{width:100%;accent-color:var(--acc)}
+  .chips{display:flex;gap:6px;flex-wrap:wrap}
+  .chip{background:#0004;border:1px solid var(--line);border-radius:999px;padding:6px 12px;font-size:.9rem;cursor:pointer;color:var(--txt)}
+  .chip.on{background:var(--acc);color:#1a1200;border-color:var(--acc);font-weight:700}
+  .sw{width:34px;height:34px;border-radius:8px;border:2px solid #fff6;background:#444;flex:none}
+  .chk{display:flex;gap:8px;align-items:center;font-size:.95rem}
+  .msg{font-size:.88rem;color:var(--mut);min-height:1.2em}
+</style>
+</head>
+<body>
+<main>
+  <div>
+    <h1>🔢 Comptador d'unitats</h1>
+    <p class="sub">Fes una foto o tria-la de la galeria i compta quantes unitats hi ha.</p>
+  </div>
+
+  <div class="row">
+    <label class="btn primary">📷 Fer foto<input id="cam" type="file" accept="image/*" capture="environment"></label>
+    <label class="btn">🖼️ Galeria<input id="gal" type="file" accept="image/*"></label>
+  </div>
+
+  <div class="row">
+    <button id="mAi" class="on">🤖 Objectes (IA)</button>
+    <button id="mCol">🎨 Per color</button>
+  </div>
+
+  <div class="stage">
+    <div id="empty">Encara no hi ha cap imatge.<br>Fes una foto o tria-la de la galeria.</div>
+    <canvas id="view" hidden></canvas>
+    <div class="busy" id="busy"><span id="busyTxt">…</span></div>
+  </div>
+
+  <div class="result">
+    <div class="big"><span id="total">0</span><small id="what">unitats</small></div>
+    <div class="adj" title="Correcció manual">
+      <button id="minus">−</button><span id="adjv">±0</span><button id="plus">+</button>
+    </div>
+  </div>
+  <div class="msg" id="msg"></div>
+
+  <section class="panel" id="pAi">
+    <div class="msg" style="margin:0">Detecta objectes habituals (persones, ampolles, fruites, tasses, cotxes, llibres…). Toca un requadre per excloure'l o tornar-lo a incloure.</div>
+    <div class="ctl"><span>Sensibilitat mínima: <b id="confv">40%</b></span><input id="conf" type="range" min="10" max="90" value="40"></div>
+    <div class="chips" id="chips"></div>
+  </section>
+
+  <section class="panel" id="pCol" hidden>
+    <div class="msg" style="margin:0">Ideal per a coses petites i iguals (pastilles, monedes, cargols, llavors…) sobre un fons diferent. <b>Toca un exemplar a la imatge</b> per triar-ne el color.</div>
+    <div class="row" style="align-items:center;flex-wrap:nowrap"><div class="sw" id="sw"></div><div class="ctl" style="flex:1"><span>Tolerància de color: <b id="tolv">60</b></span><input id="tol" type="range" min="10" max="180" value="60"></div></div>
+    <div class="ctl"><span>Mida mínima de l'objecte: <b id="minv">60</b> px</span><input id="min" type="range" min="5" max="3000" value="60"></div>
+    <label class="chk"><input type="checkbox" id="split" checked> Separar objectes enganxats (estima per àrea)</label>
+    <label class="chk"><input type="checkbox" id="showmask"> Mostrar la màscara de color</label>
+  </section>
+</main>
+
+<script>
+const $=id=>document.getElementById(id);
+const view=$('view'), ctx=view.getContext('2d');
+const base=document.createElement('canvas'), bctx=base.getContext('2d',{willReadFrequently:true});
+const maskCv=document.createElement('canvas');
+const MAXD=1000;
+let hasImg=false, mode='ai', model=null, preds=[], selClass=null, excluded=new Set(), shown=[];
+let picked=null, blobs=[], adj=0, colorTotal=0;
+
+const CA={person:'persona',bicycle:'bicicleta',car:'cotxe',motorcycle:'moto',airplane:'avió',bus:'autobús',train:'tren',truck:'camió',boat:'vaixell','traffic light':'semàfor','bench':'banc',bird:'ocell',cat:'gat',dog:'gos',horse:'cavall',sheep:'ovella',cow:'vaca',elephant:'elefant',bear:'ós',zebra:'zebra',giraffe:'girafa',backpack:'motxilla',umbrella:'paraigua',handbag:'bossa',tie:'corbata',suitcase:'maleta',frisbee:'frisbee',skis:'esquís',snowboard:'snowboard','sports ball':'pilota',kite:'estel',bottle:'ampolla','wine glass':'copa',cup:'tassa',fork:'forquilla',knife:'ganivet',spoon:'cullera',bowl:'bol',banana:'plàtan',apple:'poma',sandwich:'entrepà',orange:'taronja',broccoli:'bròquil',carrot:'pastanaga','hot dog':'frankfurt',pizza:'pizza',donut:'dònut',cake:'pastís',chair:'cadira',couch:'sofà','potted plant':'planta',bed:'llit','dining table':'taula',toilet:'vàter',tv:'televisor',laptop:'portàtil',mouse:'ratolí',remote:'comandament',keyboard:'teclat','cell phone':'mòbil',microwave:'microones',oven:'forn',toaster:'torradora',sink:'pica',refrigerator:'nevera',book:'llibre',clock:'rellotge',vase:'gerro',scissors:'tisores','teddy bear':'ós de peluix','hair drier':'assecador',toothbrush:'raspall de dents'};
+const ca=n=>CA[n]||n;
+
+function busy(on,t){ $('busy').classList.toggle('show',on); if(t)$('busyTxt').textContent=t; }
+function msg(t){ $('msg').textContent=t||''; }
+
+/* ---------- Càrrega d'imatge ---------- */
+function loadFile(f){
+  if(!f) return;
+  const url=URL.createObjectURL(f), im=new Image();
+  im.onload=()=>{
+    const s=Math.min(1,MAXD/Math.max(im.naturalWidth,im.naturalHeight));
+    base.width=view.width=Math.round(im.naturalWidth*s);
+    base.height=view.height=Math.round(im.naturalHeight*s);
+    bctx.drawImage(im,0,0,base.width,base.height);
+    URL.revokeObjectURL(url);
+    hasImg=true; $('empty').hidden=true; view.hidden=false;
+    preds=[]; excluded.clear(); selClass=null; blobs=[]; adj=0; picked=null; $('sw').style.background='#444';
+    updateAdj(); run();
+  };
+  im.onerror=()=>msg('No s\'ha pogut obrir la imatge.');
+  im.src=url;
+}
+$('cam').onchange=e=>{loadFile(e.target.files[0]);e.target.value=''};
+$('gal').onchange=e=>{loadFile(e.target.files[0]);e.target.value=''};
+
+/* ---------- Mode ---------- */
+function setMode(m){
+  mode=m;
+  $('mAi').classList.toggle('on',m==='ai'); $('mCol').classList.toggle('on',m==='col');
+  $('pAi').hidden=m!=='ai'; $('pCol').hidden=m!=='col';
+  adj=0; updateAdj(); run();
+}
+$('mAi').onclick=()=>setMode('ai'); $('mCol').onclick=()=>setMode('col');
+function run(){
+  if(!hasImg) return;
+  if(mode==='ai') runAI();
+  else { if(picked) runColor(); else { draw(); msg('Toca un exemplar a la imatge per triar-ne el color.'); } }
+}
+
+/* ---------- Mode IA (COCO-SSD) ---------- */
+function loadScript(src){return new Promise((ok,ko)=>{const s=document.createElement('script');s.src=src;s.onload=ok;s.onerror=()=>ko(new Error('No es pot descarregar '+src));document.head.appendChild(s)})}
+async function loadModel(){
+  if(model) return model;
+  await loadScript('https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js');
+  await loadScript('https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js');
+  model=await cocoSsd.load({base:'mobilenet_v2'});
+  return model;
+}
+async function runAI(){
+  if(!hasImg) return;
+  try{
+    busy(true,model?'Detectant…':'Carregant el model d\'IA (només el primer cop, uns 15 MB)…');
+    await loadModel();
+    busy(true,'Detectant…');
+    preds=await model.detect(base,100,0.1);
+    excluded.clear(); selClass=null;
+    refreshAI();
+  }catch(e){ msg('Error: '+e.message+' (cal connexió a internet per carregar el model)'); }
+  finally{ busy(false); }
+}
+function refreshAI(){
+  const th=$('conf').value/100; $('confv').textContent=$('conf').value+'%';
+  const ok=preds.filter(p=>p.score>=th), counts={};
+  ok.forEach(p=>counts[p.class]=(counts[p.class]||0)+1);
+  const names=Object.keys(counts).sort((a,b)=>counts[b]-counts[a]);
+  if(!selClass||!counts[selClass]) selClass=names[0]||null;
+  $('chips').innerHTML='';
+  names.forEach(n=>{const c=document.createElement('div');c.className='chip'+(n===selClass?' on':'');c.textContent=ca(n)+' · '+counts[n];c.onclick=()=>{selClass=n;excluded.clear();refreshAI()};$('chips').appendChild(c)});
+  shown=ok.filter(p=>p.class===selClass);
+  draw();
+  msg(names.length?'':'No s\'ha detectat cap objecte conegut. Prova el mode «Per color» o baixa la sensibilitat.');
+}
+$('conf').oninput=()=>{ if(preds.length) refreshAI(); };
+
+/* ---------- Mode color ---------- */
+function runColor(){
+  if(!hasImg||!picked) return;
+  const W=base.width,H=base.height,N=W*H, d=bctx.getImageData(0,0,W,H).data;
+  const tol=+$('tol').value, t2=tol*tol, [pr,pg,pb]=picked;
+  $('tolv').textContent=tol; $('minv').textContent=$('min').value;
+  const mask=new Uint8Array(N);
+  for(let i=0;i<N;i++){const j=i*4,a=d[j]-pr,b=d[j+1]-pg,c=d[j+2]-pb; if(a*a+b*b+c*c<=t2) mask[i]=1;}
+  // màscara visual
+  maskCv.width=W;maskCv.height=H;
+  const mi=maskCv.getContext('2d').createImageData(W,H);
+  for(let i=0;i<N;i++) if(mask[i]){const j=i*4;mi.data[j]=255;mi.data[j+1]=0;mi.data[j+2]=120;mi.data[j+3]=130;}
+  maskCv.getContext('2d').putImageData(mi,0,0);
+  // components connexos
+  const seen=new Uint8Array(N), stack=new Int32Array(N), minA=+$('min').value, all=[];
+  for(let s=0;s<N;s++){
+    if(!mask[s]||seen[s]) continue;
+    let sp=0; stack[sp++]=s; seen[s]=1;
+    let area=0,sx=0,sy=0,x0=W,y0=H,x1=0,y1=0;
+    while(sp){
+      const p=stack[--sp], x=p%W, y=(p/W)|0;
+      area++; sx+=x; sy+=y;
+      if(x<x0)x0=x; if(x>x1)x1=x; if(y<y0)y0=y; if(y>y1)y1=y;
+      if(x>0&&mask[p-1]&&!seen[p-1]){seen[p-1]=1;stack[sp++]=p-1}
+      if(x<W-1&&mask[p+1]&&!seen[p+1]){seen[p+1]=1;stack[sp++]=p+1}
+      if(y>0&&mask[p-W]&&!seen[p-W]){seen[p-W]=1;stack[sp++]=p-W}
+      if(y<H-1&&mask[p+W]&&!seen[p+W]){seen[p+W]=1;stack[sp++]=p+W}
+    }
+    if(area>=minA) all.push({area,cx:sx/area,cy:sy/area,x0,y0,x1,y1,n:1});
+  }
+  if($('split').checked&&all.length){
+    const a=all.map(b=>b.area).sort((m,n)=>m-n), med=a[a.length>>1];
+    all.forEach(b=>{ if(b.area>1.5*med) b.n=Math.max(1,Math.round(b.area/med)); });
+  }
+  blobs=all; colorTotal=all.reduce((s,b)=>s+b.n,0);
+  draw();
+  msg(colorTotal?'Si en falten o en sobren, ajusta la tolerància, la mida mínima o fes servir + / −.':'Res detectat amb aquest color: puja la tolerància o toca un altre exemplar.');
+}
+['tol','min'].forEach(id=>$(id).oninput=()=>{$('tolv').textContent=$('tol').value;$('minv').textContent=$('min').value;clearTimeout(runColor.t);runColor.t=setTimeout(runColor,120)});
+$('split').onchange=runColor;
+$('showmask').onchange=draw;
+
+/* ---------- Dibuix ---------- */
+function draw(){
+  if(!hasImg) return;
+  ctx.drawImage(base,0,0);
+  const lw=Math.max(2,view.width/300), fs=Math.max(12,view.width/45);
+  ctx.lineWidth=lw; ctx.font='700 '+fs+'px system-ui,sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+  let n=0;
+  if(mode==='ai'){
+    shown.forEach(p=>{
+      const off=excluded.has(p); const [x,y,w,h]=p.bbox;
+      ctx.strokeStyle=off?'#ff5a5a88':'#3ddc97'; ctx.setLineDash(off?[8,6]:[]); ctx.strokeRect(x,y,w,h);
+      if(!off){ n++; label(String(n),x+fs*.7,y+fs*.7,fs); }
+    });
+    ctx.setLineDash([]); total(n);
+  } else {
+    if($('showmask').checked&&maskCv.width) ctx.drawImage(maskCv,0,0);
+    let k=0;
+    blobs.forEach(b=>{
+      ctx.strokeStyle='#ffb020'; ctx.beginPath();
+      ctx.arc(b.cx,b.cy,Math.max(fs*.9,Math.sqrt(b.area/Math.PI)*1.1),0,7); ctx.stroke();
+      k+=b.n; label(b.n>1?'×'+b.n:String(k),b.cx,b.cy,fs);
+    });
+    total(colorTotal);
+  }
+}
+function label(t,x,y,fs){
+  const w=ctx.measureText(t).width+fs*.6;
+  ctx.fillStyle='#000c'; ctx.beginPath(); ctx.roundRect(x-w/2,y-fs*.7,w,fs*1.4,fs*.5); ctx.fill();
+  ctx.fillStyle='#fff'; ctx.fillText(t,x,y);
+}
+function total(n){
+  const t=Math.max(0,n+adj);
+  $('total').textContent=t;
+  $('what').textContent=mode==='ai'&&selClass?ca(selClass):'unitats';
+}
+function updateAdj(){ $('adjv').textContent=adj===0?'±0':(adj>0?'+'+adj:adj); if(hasImg){ if(mode==='ai')draw(); else total(colorTotal); } }
+$('plus').onclick=()=>{adj++;updateAdj()}; $('minus').onclick=()=>{adj--;updateAdj()};
+
+/* ---------- Toc sobre la imatge ---------- */
+view.addEventListener('click',e=>{
+  if(!hasImg) return;
+  const r=view.getBoundingClientRect(), x=(e.clientX-r.left)*view.width/r.width, y=(e.clientY-r.top)*view.height/r.height;
+  if(mode==='ai'){
+    let best=null;
+    shown.forEach(p=>{const [a,b,w,h]=p.bbox; if(x>=a&&x<=a+w&&y>=b&&y<=b+h&&(!best||w*h<best.bbox[2]*best.bbox[3])) best=p;});
+    if(best){ excluded.has(best)?excluded.delete(best):excluded.add(best); draw(); }
+  } else {
+    const d=bctx.getImageData(Math.max(0,x-2)|0,Math.max(0,y-2)|0,5,5).data; let r0=0,g=0,b=0,c=d.length/4;
+    for(let i=0;i<d.length;i+=4){r0+=d[i];g+=d[i+1];b+=d[i+2]}
+    picked=[r0/c,g/c,b/c].map(Math.round);
+    $('sw').style.background='rgb('+picked.join(',')+')';
+    runColor();
+  }
+});
+</script>
+</body>
+</html>
