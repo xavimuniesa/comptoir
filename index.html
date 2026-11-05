@@ -13,7 +13,7 @@
   h1{font-size:1.25rem;margin:4px 0 0}
   .sub{color:var(--mut);font-size:.9rem;margin:0}
   .row{display:flex;gap:8px;flex-wrap:wrap}
-  button,label.btn{background:var(--card);color:var(--txt);border:1px solid var(--line);border-radius:12px;padding:12px 14px;font:inherit;font-weight:600;cursor:pointer;flex:1;text-align:center;min-width:120px}
+  button,label.btn{background:var(--card);color:var(--txt);border:1px solid var(--line);border-radius:12px;padding:12px 14px;font:inherit;font-weight:600;cursor:pointer;flex:1;text-align:center;min-width:90px}
   button.primary,label.btn.primary{background:var(--acc);color:#1a1200;border-color:var(--acc)}
   button.on{background:var(--acc2);color:#04200f;border-color:var(--acc2)}
   button:active,label.btn:active{transform:scale(.98)}
@@ -56,8 +56,9 @@
   </div>
 
   <div class="row">
-    <button id="mAi" class="on">🤖 Objectes (IA)</button>
-    <button id="mCol">🎨 Per color</button>
+    <button id="mRep" class="on">🔁 Repeticions</button>
+    <button id="mAi">🤖 IA</button>
+    <button id="mCol">🎨 Color</button>
   </div>
 
   <div class="stage">
@@ -74,7 +75,13 @@
   </div>
   <div class="msg" id="msg"></div>
 
-  <section class="panel" id="pAi">
+  <section class="panel" id="pRep">
+    <div class="msg" style="margin:0">Compta qualsevol cosa que es repeteixi, sense saber què és. <b>Toca dues vegades</b> la foto: primer la cantonada superior esquerra i després la inferior dreta d'<b>UN sol element</b> (millor una part que es vegi bé en tots, com el mànec). L'app en buscarà tots els que s'hi assemblin.</div>
+    <div class="ctl"><span>Semblança mínima: <b id="simv">60%</b></span><input id="sim" type="range" min="25" max="95" value="60"></div>
+    <button id="resetSel">↺ Triar un altre element</button>
+  </section>
+
+  <section class="panel" id="pAi" hidden>
     <div class="msg" style="margin:0">Detecta objectes habituals (persones, ampolles, fruites, tasses, cotxes, llibres…). Toca un requadre per excloure'l o tornar-lo a incloure.</div>
     <div class="ctl"><span>Sensibilitat mínima: <b id="confv">40%</b></span><input id="conf" type="range" min="10" max="90" value="40"></div>
     <div class="chips" id="chips"></div>
@@ -95,8 +102,9 @@ const view=$('view'), ctx=view.getContext('2d');
 const base=document.createElement('canvas'), bctx=base.getContext('2d',{willReadFrequently:true});
 const maskCv=document.createElement('canvas');
 const MAXD=1000;
-let hasImg=false, mode='ai', model=null, preds=[], selClass=null, excluded=new Set(), shown=[];
+let hasImg=false, mode='rep', model=null, preds=[], selClass=null, excluded=new Set(), shown=[];
 let picked=null, blobs=[], adj=0, colorTotal=0;
+let tpl=null, corner=null, scoreMap=null, repHits=[], repTotal=0;
 
 const CA={person:'persona',bicycle:'bicicleta',car:'cotxe',motorcycle:'moto',airplane:'avió',bus:'autobús',train:'tren',truck:'camió',boat:'vaixell','traffic light':'semàfor','bench':'banc',bird:'ocell',cat:'gat',dog:'gos',horse:'cavall',sheep:'ovella',cow:'vaca',elephant:'elefant',bear:'ós',zebra:'zebra',giraffe:'girafa',backpack:'motxilla',umbrella:'paraigua',handbag:'bossa',tie:'corbata',suitcase:'maleta',frisbee:'frisbee',skis:'esquís',snowboard:'snowboard','sports ball':'pilota',kite:'estel',bottle:'ampolla','wine glass':'copa',cup:'tassa',fork:'forquilla',knife:'ganivet',spoon:'cullera',bowl:'bol',banana:'plàtan',apple:'poma',sandwich:'entrepà',orange:'taronja',broccoli:'bròquil',carrot:'pastanaga','hot dog':'frankfurt',pizza:'pizza',donut:'dònut',cake:'pastís',chair:'cadira',couch:'sofà','potted plant':'planta',bed:'llit','dining table':'taula',toilet:'vàter',tv:'televisor',laptop:'portàtil',mouse:'ratolí',remote:'comandament',keyboard:'teclat','cell phone':'mòbil',microwave:'microones',oven:'forn',toaster:'torradora',sink:'pica',refrigerator:'nevera',book:'llibre',clock:'rellotge',vase:'gerro',scissors:'tisores','teddy bear':'ós de peluix','hair drier':'assecador',toothbrush:'raspall de dents'};
 const ca=n=>CA[n]||n;
@@ -115,7 +123,7 @@ function loadFile(f,inp){
     bctx.drawImage(im,0,0,base.width,base.height);
     URL.revokeObjectURL(url); if(inp) inp.value='';
     hasImg=true; $('empty').hidden=true; view.hidden=false;
-    preds=[]; shown=[]; colorTotal=0; excluded.clear(); selClass=null; blobs=[]; adj=0; picked=null; ctx.drawImage(base,0,0); $('sw').style.background='#444';
+    preds=[]; shown=[]; colorTotal=0; tpl=null; corner=null; scoreMap=null; repHits=[]; repTotal=0; excluded.clear(); selClass=null; blobs=[]; adj=0; picked=null; ctx.drawImage(base,0,0); $('sw').style.background='#444';
     updateAdj(); run();
   };
   im.onerror=()=>{ if(inp) inp.value=''; msg('No s\'ha pogut obrir la imatge.'); };
@@ -127,14 +135,15 @@ $('gal').onchange=e=>loadFile(e.target.files[0],e.target);
 /* ---------- Mode ---------- */
 function setMode(m){
   mode=m;
-  $('mAi').classList.toggle('on',m==='ai'); $('mCol').classList.toggle('on',m==='col');
-  $('pAi').hidden=m!=='ai'; $('pCol').hidden=m!=='col';
+  $('mRep').classList.toggle('on',m==='rep'); $('mAi').classList.toggle('on',m==='ai'); $('mCol').classList.toggle('on',m==='col');
+  $('pRep').hidden=m!=='rep'; $('pAi').hidden=m!=='ai'; $('pCol').hidden=m!=='col';
   adj=0; updateAdj(); run();
 }
-$('mAi').onclick=()=>setMode('ai'); $('mCol').onclick=()=>setMode('col');
+$('mRep').onclick=()=>setMode('rep'); $('mAi').onclick=()=>setMode('ai'); $('mCol').onclick=()=>setMode('col');
 function run(){
   if(!hasImg) return;
-  if(mode==='ai') runAI();
+  if(mode==='rep'){ if(tpl) runRep(); else { draw(); msg('Toca la cantonada superior esquerra d\'UN element.'); } }
+  else if(mode==='ai') runAI();
   else { if(picked) runColor(); else { draw(); msg('Toca un exemplar a la imatge per triar-ne el color.'); } }
 }
 
@@ -164,10 +173,11 @@ function refreshAI(){
   const ok=preds.filter(p=>p.score>=th), counts={};
   ok.forEach(p=>counts[p.class]=(counts[p.class]||0)+1);
   const names=Object.keys(counts).sort((a,b)=>counts[b]-counts[a]);
-  if(!selClass||!counts[selClass]) selClass=names[0]||null;
+  if(!selClass||(selClass!=='*'&&!counts[selClass])) selClass='*';
   $('chips').innerHTML='';
+  { const c=document.createElement('div'); c.className='chip'+(selClass==='*'?' on':''); c.textContent='Tots · '+ok.length; c.onclick=()=>{selClass='*';excluded.clear();refreshAI()}; $('chips').appendChild(c); }
   names.forEach(n=>{const c=document.createElement('div');c.className='chip'+(n===selClass?' on':'');c.textContent=ca(n)+' · '+counts[n];c.onclick=()=>{selClass=n;excluded.clear();refreshAI()};$('chips').appendChild(c)});
-  shown=ok.filter(p=>p.class===selClass);
+  shown=selClass==='*'?ok:ok.filter(p=>p.class===selClass);
   draw();
   msg(names.length?'':'No s\'ha detectat cap objecte conegut. Prova el mode «Per color» o baixa la sensibilitat.');
 }
@@ -215,6 +225,78 @@ function runColor(){
 $('split').onchange=runColor;
 $('showmask').onchange=draw;
 
+/* ---------- Mode repeticions (plantilla, sense identificar res) ---------- */
+const RM=360; // mida màxima d'anàlisi (px)
+function repTap(x,y){
+  if(!corner||tpl){
+    corner=[x,y]; tpl=null; scoreMap=null; repHits=[]; repTotal=0; draw();
+    msg('Ara toca la cantonada inferior dreta del mateix element.'); return;
+  }
+  const x0=Math.min(corner[0],x),y0=Math.min(corner[1],y),x1=Math.max(corner[0],x),y1=Math.max(corner[1],y);
+  if(x1-x0<12||y1-y0<12){ corner=null; draw(); msg('Selecció massa petita. Torna a tocar la cantonada superior esquerra.'); return; }
+  tpl={x:x0,y:y0,w:x1-x0,h:y1-y0};
+  runRep();
+}
+function runRep(){
+  if(!hasImg||!tpl) return;
+  busy(true,'Buscant elements semblants…');
+  setTimeout(()=>{
+    try{
+      const s=Math.min(1,RM/Math.max(base.width,base.height));
+      const W=Math.round(base.width*s), H=Math.round(base.height*s);
+      const c=document.createElement('canvas'); c.width=W; c.height=H;
+      const cc=c.getContext('2d',{willReadFrequently:true}); cc.drawImage(base,0,0,W,H);
+      const d=cc.getImageData(0,0,W,H).data, g=new Float32Array(W*H);
+      for(let i=0;i<W*H;i++) g[i]=0.299*d[i*4]+0.587*d[i*4+1]+0.114*d[i*4+2];
+      let tx=Math.round(tpl.x*s), ty=Math.round(tpl.y*s);
+      const tw=Math.max(6,Math.min(W-1,Math.round(tpl.w*s))), th=Math.max(6,Math.min(H-1,Math.round(tpl.h*s)));
+      tx=Math.max(0,Math.min(W-tw,tx)); ty=Math.max(0,Math.min(H-th,ty));
+      const st=2, ofs=[], tz=[]; let tm=0;
+      for(let j=0;j<th;j+=st) for(let i=0;i<tw;i+=st){ ofs.push(j*W+i); const v=g[(ty+j)*W+tx+i]; tz.push(v); tm+=v; }
+      const n=ofs.length; tm/=n; let tn=0;
+      for(let k=0;k<n;k++){ tz[k]-=tm; tn+=tz[k]*tz[k]; }
+      tn=Math.sqrt(tn);
+      if(tn<1){ busy(false); msg('Aquesta zona no té prou detall (és massa llisa). Tria una part més marcada de l\'element.'); return; }
+      const cols=Math.floor((W-tw)/st)+1, rows=Math.floor((H-th)/st)+1, sm=new Float32Array(cols*rows);
+      for(let r=0;r<rows;r++){
+        for(let q=0;q<cols;q++){
+          const base0=(r*st)*W+q*st; let sI=0,sI2=0,sIt=0;
+          for(let k=0;k<n;k++){ const v=g[base0+ofs[k]]; sI+=v; sI2+=v*v; sIt+=v*tz[k]; }
+          const varr=sI2-sI*sI/n;
+          sm[r*cols+q]= varr<n*9 ? 0 : sIt/(Math.sqrt(varr)*tn);
+        }
+      }
+      scoreMap={sm,cols,rows,tw,th,s,st};
+      collectRep(); draw();
+      msg(repTotal>1?'Si en falten, baixa la semblança; si en sobren, puja-la.':'No s\'ha trobat cap altre element: baixa la semblança o tria una altra part de l\'element.');
+    }catch(e){ msg('Error: '+e.message); }
+    finally{ busy(false); }
+  },30);
+}
+function collectRep(){
+  if(!scoreMap) return;
+  const {sm,cols,tw,th,s,st}=scoreMap, thr=$('sim').value/100;
+  $('simv').textContent=$('sim').value+'%';
+  const cand=[]; for(let i=0;i<sm.length;i++) if(sm[i]>=thr) cand.push(i);
+  cand.sort((a,b)=>sm[b]-sm[a]);
+  const acc=[];
+  for(const i of cand){
+    const x=(i%cols)*st, y=((i/cols)|0)*st; let ok=true;
+    for(const a of acc){ if(Math.abs(a.x-x)<tw*0.55&&Math.abs(a.y-y)<th*0.55){ok=false;break;} }
+    if(ok) acc.push({x,y});
+  }
+  repHits=acc.map(a=>({x:a.x/s,y:a.y/s,w:tw/s,h:th/s})).sort((a,b)=>(Math.round(a.y/(a.h*0.6))-Math.round(b.y/(b.h*0.6)))||(a.x-b.x));
+  repTotal=repHits.length;
+}
+function drawRep(fs){
+  if(tpl){ ctx.setLineDash([8,6]); ctx.strokeStyle='#fff'; ctx.strokeRect(tpl.x,tpl.y,tpl.w,tpl.h); ctx.setLineDash([]); }
+  else if(corner){ ctx.fillStyle='#ffb020'; ctx.beginPath(); ctx.arc(corner[0],corner[1],fs*.5,0,7); ctx.fill(); }
+  repHits.forEach((h,i)=>{ ctx.strokeStyle='#3ddc97'; ctx.strokeRect(h.x,h.y,h.w,h.h); label(String(i+1),h.x+h.w/2,h.y+fs*.9,fs); });
+  total(repTotal);
+}
+$('sim').oninput=()=>{ if(scoreMap){ collectRep(); draw(); } else $('simv').textContent=$('sim').value+'%'; };
+$('resetSel').onclick=()=>{ tpl=null; corner=null; scoreMap=null; repHits=[]; repTotal=0; if(hasImg){ draw(); msg('Toca la cantonada superior esquerra d\'UN element.'); } };
+
 /* ---------- Dibuix ---------- */
 function draw(){
   if(!hasImg) return;
@@ -222,7 +304,8 @@ function draw(){
   const lw=Math.max(2,view.width/300), fs=Math.max(12,view.width/45);
   ctx.lineWidth=lw; ctx.font='700 '+fs+'px system-ui,sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
   let n=0;
-  if(mode==='ai'){
+  if(mode==='rep'){ drawRep(fs); }
+  else if(mode==='ai'){
     shown.forEach(p=>{
       const off=excluded.has(p); const [x,y,w,h]=p.bbox;
       ctx.strokeStyle=off?'#ff5a5a88':'#3ddc97'; ctx.setLineDash(off?[8,6]:[]); ctx.strokeRect(x,y,w,h);
@@ -248,15 +331,16 @@ function label(t,x,y,fs){
 function total(n){
   const t=Math.max(0,n+adj);
   $('total').textContent=t;
-  $('what').textContent=mode==='ai'&&selClass?ca(selClass):'unitats';
+  $('what').textContent=mode==='ai'&&selClass&&selClass!=='*'?ca(selClass):'elements';
 }
-function updateAdj(){ $('adjv').textContent=adj===0?'±0':(adj>0?'+'+adj:adj); if(hasImg){ if(mode==='ai')draw(); else total(colorTotal); } }
+function updateAdj(){ $('adjv').textContent=adj===0?'±0':(adj>0?'+'+adj:adj); if(hasImg){ if(mode==='col') total(colorTotal); else draw(); } }
 $('plus').onclick=()=>{adj++;updateAdj()}; $('minus').onclick=()=>{adj--;updateAdj()};
 
 /* ---------- Toc sobre la imatge ---------- */
 view.addEventListener('click',e=>{
   if(!hasImg) return;
   const r=view.getBoundingClientRect(), x=(e.clientX-r.left)*view.width/r.width, y=(e.clientY-r.top)*view.height/r.height;
+  if(mode==='rep'){ repTap(x,y); return; }
   if(mode==='ai'){
     let best=null;
     shown.forEach(p=>{const [a,b,w,h]=p.bbox; if(x>=a&&x<=a+w&&y>=b&&y<=b+h&&(!best||w*h<best.bbox[2]*best.bbox[3])) best=p;});
