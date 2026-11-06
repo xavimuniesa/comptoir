@@ -369,12 +369,20 @@ function simAt(g,W,H,bb,lag,alongX,count){
   if(count>=3) r.push(shiftNCC(g,W,H,bb,lag*2,alongX));
   const ok=r.filter(v=>v>=-0.5); return ok.length?ok.reduce((s,v)=>s+v,0)/ok.length:-1;
 }
-const SIM_MIN=0.5;
+function ctrlAt(g,W,H,bb,lag,alongX){
+  const r=[shiftNCC(g,W,H,bb,lag*0.5,alongX),shiftNCC(g,W,H,bb,lag*1.5,alongX)].filter(v=>v>=-0.5);
+  return r.length?r.reduce((s,v)=>s+v,0)/r.length:0;
+}
+const SIM_MIN=0.5, EXC_MIN=0.07;
 function autoAnalyze(d,W,H){
   const N=W*H;
   const bw=Math.max(2,Math.round(Math.min(W,H)*0.03)), bs=[[],[],[]];
   for(let y=0;y<H;y++) for(let x=0;x<W;x++) if(x<bw||x>=W-bw||y<bw||y>=H-bw){ const j=(y*W+x)*4; bs[0].push(d[j]); bs[1].push(d[j+1]); bs[2].push(d[j+2]); }
   const med=a=>{a.sort((p,q)=>p-q);return a[a.length>>1]}; const bg=[med(bs[0]),med(bs[1]),med(bs[2])];
+  // El fons ha de ser net: si la vora de la foto té colors molt diferents (parets, prestatges…), no es pot separar objectes per fons
+  let nearB=0,totB=0;
+  for(let y=0;y<H;y++) for(let x=0;x<W;x++) if(x<bw||x>=W-bw||y<bw||y>=H-bw){ const j=(y*W+x)*4,a=d[j]-bg[0],b=d[j+1]-bg[1],c=d[j+2]-bg[2]; totB++; if(a*a+b*b+c*c<=45*45) nearB++; }
+  const bgFrac=nearB/totB, plain=bgFrac>=0.8;
   let dist=new Float32Array(N), gray=new Float32Array(N);
   for(let i=0;i<N;i++){ const j=i*4,a=d[j]-bg[0],b=d[j+1]-bg[1],c=d[j+2]-bg[2]; dist[i]=Math.sqrt(a*a+b*b+c*c); gray[i]=0.299*d[j]+0.587*d[j+1]+0.114*d[j+2]; }
   dist=boxBlur(dist,W,H,1);
@@ -401,9 +409,11 @@ function autoAnalyze(d,W,H){
   const cands=[];
   // 1) Components separats: només vàlid si tots tenen una mida semblant
   if(ccCount>=1&&!full){
-    const a=comps.map(c=>c.area/c.n).sort((p,q)=>p-q), m=a[a.length>>1];
-    const similar=a.filter(v=>v>=0.5*m&&v<=2*m).length/a.length;
-    cands.push({kind:'cc',count:ccCount,comps,sim:similar,valid:similar>=0.75&&(ccCount===1||!merged||ccCount<=3)});
+    // Semblança sobre les àrees REALS (sense dividir): ≥80% han de fer una mida comparable, i cap taca pot valer més de 3 elements
+    const a=comps.map(c=>c.area).sort((p,q)=>p-q), m=a[a.length>>1];
+    const similar=a.filter(v=>v>=0.5*m&&v<=2.5*m).length/a.length;
+    const maxSplit=Math.max(...comps.map(c=>c.n));
+    cands.push({kind:'cc',count:ccCount,comps,sim:similar,valid:plain&&similar>=0.8&&maxSplit<=3&&(ccCount===1||!merged||ccCount<=3)});
   }
   // 2) Repetició en fila (escaneig)
   const sh=scanLines(fg,W,H,true), sv=scanLines(fg,W,H,false), sc=sh.count>=sv.count?sh:sv;
@@ -412,7 +422,8 @@ function autoAnalyze(d,W,H){
     const sd=df.slice().sort((p,q)=>p-q), pitch=sd[sd.length>>1];
     const regular=df.every(v=>Math.abs(v-pitch)<=0.4*pitch);
     const sim=regular?simAt(gray,W,H,bb,pitch,sc.horizontal,sc.count):0;
-    cands.push({kind:'scan',count:sc.count,scan:sc,sim,valid:regular&&sim>=SIM_MIN});
+    const exc=regular?sim-ctrlAt(gray,W,H,bb,pitch,sc.horizontal):0;
+    cands.push({kind:'scan',count:sc.count,scan:sc,sim,exc,valid:plain&&regular&&sim>=SIM_MIN&&exc>=EXC_MIN});
   }
   // 3) Patró periòdic dins la caixa del primer pla
   if(bb){
@@ -422,7 +433,8 @@ function autoAnalyze(d,W,H){
       const all=[per.count].concat(per.counts.filter(n=>n!==per.count));
       all.forEach((n,i)=>{
         const sim=simAt(gray,W,H,bb,per.L/n,per.vertical,n);
-        cands.push({kind:'per',count:n,per:Object.assign({},per,{count:n}),sim,valid:sim>=SIM_MIN&&!full,alt:i>0});
+        const exc=sim-ctrlAt(gray,W,H,bb,per.L/n,per.vertical);
+        cands.push({kind:'per',count:n,per:Object.assign({},per,{count:n}),sim,exc,valid:sim>=SIM_MIN&&exc>=EXC_MIN&&!full,alt:i>0});
       });
     }
   }
@@ -434,7 +446,7 @@ function autoAnalyze(d,W,H){
   else if(best('per')>=0) chosen=best('per');
   else if(best('scan')>=0) chosen=best('scan');
   else if(best('cc')>=0) chosen=best('cc');
-  return {cands,chosen,merged,full,fgFrac,bbFrac,ccCount,thr,bg,uncertain:chosen<0};
+  return {cands,chosen,merged,full,plain,bgFrac,fgFrac,bbFrac,ccCount,thr,bg,uncertain:chosen<0};
 }
 
 
