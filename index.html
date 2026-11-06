@@ -80,11 +80,12 @@
     <div class="msg" style="margin:0">Compta sol, sense dir-li què és. Pots fer la foto i ja està.</div>
     <div class="chips" id="autoChips"></div>
     <div class="msg" id="autoWhy" style="margin:0"></div>
+    <button id="goRep" hidden>👆 Triar un element i buscar-ne de semblants</button>
   </section>
 
   <section class="panel" id="pRep" hidden>
-    <div class="msg" style="margin:0">Compta qualsevol cosa que es repeteixi, sense saber què és. <b>Toca dues vegades</b> la foto: primer la cantonada superior esquerra i després la inferior dreta d'<b>UN sol element</b> (millor una part que es vegi bé en tots, com el mànec). L'app en buscarà tots els que s'hi assemblin.</div>
-    <div class="ctl"><span>Semblança mínima: <b id="simv">60%</b></span><input id="sim" type="range" min="25" max="95" value="60"></div>
+    <div class="msg" style="margin:0">Per a escenes amb objectes diferents. <b>Toca dues vegades</b> la foto: cantonada superior esquerra i inferior dreta d'<b>UN</b> element. Busco els semblants (en color i a diferents mides). Les <b>línies discontínues</b> són possibles coincidències: <b>toca-les per afegir-les</b> o toca'n una de comptada per treure-la.</div>
+    <div class="ctl"><span>Semblança mínima: <b id="simv">55%</b></span><input id="sim" type="range" min="10" max="95" value="55"></div>
     <button id="resetSel">↺ Triar un altre element</button>
   </section>
 
@@ -106,7 +107,7 @@ const MAXD=1000;
 let hasImg=false, mode='auto';
 let picked=null, blobs=[], adj=0, colorTotal=0;
 let autoRes=null, autoSel=0, autoS=1;
-let tpl=null, corner=null, scoreMap=null, repHits=[], repTotal=0;
+let tpl=null, corner=null, repC=[], repOv={};
 
 
 function busy(on,t){ $('busy').classList.toggle('show',on); if(t)$('busyTxt').textContent=t; }
@@ -123,7 +124,7 @@ function loadFile(f,inp){
     bctx.drawImage(im,0,0,base.width,base.height);
     URL.revokeObjectURL(url); if(inp) inp.value='';
     hasImg=true; $('empty').hidden=true; view.hidden=false;
-    colorTotal=0; autoRes=null; autoSel=0; tpl=null; corner=null; scoreMap=null; repHits=[]; repTotal=0; blobs=[]; adj=0; picked=null; ctx.drawImage(base,0,0); $('sw').style.background='#444';
+    colorTotal=0; autoRes=null; autoSel=0; tpl=null; corner=null; repC=[]; repOv={}; blobs=[]; adj=0; picked=null; ctx.drawImage(base,0,0); $('sw').style.background='#444';
     updateAdj(); run();
   };
   im.onerror=()=>{ if(inp) inp.value=''; msg('No s\'ha pogut obrir la imatge.'); };
@@ -189,18 +190,66 @@ function runColor(){
 $('split').onchange=runColor;
 $('showmask').onchange=draw;
 
-/* ---------- Mode repeticions (plantilla, sense identificar res) ---------- */
+/* ---------- Mode plantilla (tria UN element i en busca de semblants, en color i a diverses mides) ---------- */
 const RM=360; // mida màxima d'anàlisi (px)
-function repTap(x,y){
-  if(!corner||tpl){
-    corner=[x,y]; tpl=null; scoreMap=null; repHits=[]; repTotal=0; draw();
-    msg('Ara toca la cantonada inferior dreta del mateix element.'); return;
+const REP_SCALES=[0.6,0.7,0.8,0.9,1,1.12,1.25,1.45];
+const REP_FLOOR=0.12, REP_MAX=14;
+function planes(d,W,H){const P=[new Float32Array(W*H),new Float32Array(W*H),new Float32Array(W*H)];for(let i=0;i<W*H;i++){P[0][i]=d[i*4];P[1][i]=d[i*4+1];P[2][i]=d[i*4+2]}return P}
+function resizePlane(g,W,H,x0,y0,w,h,nw,nh){
+  const o=new Float32Array(nw*nh);
+  for(let j=0;j<nh;j++)for(let i=0;i<nw;i++){
+    const x=x0+(i+0.5)*w/nw-0.5,y=y0+(j+0.5)*h/nh-0.5;
+    const xi=Math.max(0,Math.min(W-2,Math.floor(x))),yi=Math.max(0,Math.min(H-2,Math.floor(y)));
+    const fx=Math.max(0,Math.min(1,x-xi)),fy=Math.max(0,Math.min(1,y-yi));
+    o[j*nw+i]=g[yi*W+xi]*(1-fx)*(1-fy)+g[yi*W+xi+1]*fx*(1-fy)+g[(yi+1)*W+xi]*(1-fx)*fy+g[(yi+1)*W+xi+1]*fx*fy;
   }
+  return o;
+}
+// Correlació normalitzada conjunta RGB × penalització per diferència de color mitjà
+function matchColor(P,W,H,tpl,scales,thr,cw){
+  const all=[];
+  for(const sc of scales){
+    const tw=Math.round(tpl.w*sc),th=Math.round(tpl.h*sc);
+    if(tw<8||th<8||tw>=W-2||th>=H-2) continue;
+    const T=P.map(p=>resizePlane(p,W,H,tpl.x,tpl.y,tpl.w,tpl.h,tw,th));
+    const st=Math.max(1,Math.round(Math.min(tw,th)/24));
+    const ofs=[];for(let j=0;j<th;j+=st)for(let i=0;i<tw;i+=st)ofs.push([j*W+i,j*tw+i]);
+    const n=ofs.length,tz=[[],[],[]],tm=[0,0,0];let tn=0;
+    for(let c=0;c<3;c++){let m=0;for(const o of ofs){m+=T[c][o[1]]}m/=n;tm[c]=m;for(const o of ofs){const v=T[c][o[1]]-m;tz[c].push(v);tn+=v*v}}
+    tn=Math.sqrt(tn); if(tn<1) continue;
+    const pos=Math.max(2,Math.round(Math.min(tw,th)/14));
+    for(let y=0;y+th<=H;y+=pos)for(let x=0;x+tw<=W;x+=pos){
+      const b=y*W+x;let vv=0,st2=0,dc=0;
+      for(let c=0;c<3;c++){const p=P[c];let sI=0,sI2=0,sIt=0;
+        for(let k=0;k<n;k++){const v=p[b+ofs[k][0]];sI+=v;sI2+=v*v;sIt+=v*tz[c][k]}
+        vv+=sI2-sI*sI/n;st2+=sIt;const dm=sI/n-tm[c];dc+=dm*dm}
+      if(vv<n*27) continue;
+      const s=(st2/(Math.sqrt(vv)*tn))*Math.max(0,1-Math.sqrt(dc)/cw);
+      if(s>=thr) all.push({x,y,w:tw,h:th,score:s});
+    }
+  }
+  all.sort((a,b)=>b.score-a.score);
+  const keep=[];
+  for(const c of all){let ok=true;for(const k of keep){
+    const ox=Math.max(0,Math.min(c.x+c.w,k.x+k.w)-Math.max(c.x,k.x)),oy=Math.max(0,Math.min(c.y+c.h,k.y+k.h)-Math.max(c.y,k.y));
+    if(ox*oy/Math.min(c.w*c.h,k.w*k.h)>0.3){ok=false;break}}
+    if(ok){keep.push(c); if(keep.length>=REP_MAX) break;}}
+  return keep;
+}
+function repTap(x,y){
+  if(tpl){ // ja hi ha element triat: tocar un requadre l'inclou o l'exclou
+    let best=-1,ba=1e18;
+    repC.forEach((h,i)=>{ if(x>=h.x&&x<=h.x+h.w&&y>=h.y&&y<=h.y+h.h&&h.w*h.h<ba){best=i;ba=h.w*h.h;} });
+    if(best>=0){ repOv[best]=!repOn(best); draw(); }
+    return;
+  }
+  if(!corner){ corner=[x,y]; draw(); msg('Ara toca la cantonada inferior dreta del mateix element.'); return; }
   const x0=Math.min(corner[0],x),y0=Math.min(corner[1],y),x1=Math.max(corner[0],x),y1=Math.max(corner[1],y);
   if(x1-x0<12||y1-y0<12){ corner=null; draw(); msg('Selecció massa petita. Torna a tocar la cantonada superior esquerra.'); return; }
   tpl={x:x0,y:y0,w:x1-x0,h:y1-y0};
   runRep();
 }
+function repOn(i){ return (i in repOv)?repOv[i]:repC[i].score>=$('sim').value/100; }
 function runRep(){
   if(!hasImg||!tpl) return;
   busy(true,'Buscant elements semblants…');
@@ -210,57 +259,37 @@ function runRep(){
       const W=Math.round(base.width*s), H=Math.round(base.height*s);
       const c=document.createElement('canvas'); c.width=W; c.height=H;
       const cc=c.getContext('2d',{willReadFrequently:true}); cc.drawImage(base,0,0,W,H);
-      const d=cc.getImageData(0,0,W,H).data, g=new Float32Array(W*H);
-      for(let i=0;i<W*H;i++) g[i]=0.299*d[i*4]+0.587*d[i*4+1]+0.114*d[i*4+2];
-      let tx=Math.round(tpl.x*s), ty=Math.round(tpl.y*s);
-      const tw=Math.max(6,Math.min(W-1,Math.round(tpl.w*s))), th=Math.max(6,Math.min(H-1,Math.round(tpl.h*s)));
-      tx=Math.max(0,Math.min(W-tw,tx)); ty=Math.max(0,Math.min(H-th,ty));
-      const st=2, ofs=[], tz=[]; let tm=0;
-      for(let j=0;j<th;j+=st) for(let i=0;i<tw;i+=st){ ofs.push(j*W+i); const v=g[(ty+j)*W+tx+i]; tz.push(v); tm+=v; }
-      const n=ofs.length; tm/=n; let tn=0;
-      for(let k=0;k<n;k++){ tz[k]-=tm; tn+=tz[k]*tz[k]; }
-      tn=Math.sqrt(tn);
-      if(tn<1){ busy(false); msg('Aquesta zona no té prou detall (és massa llisa). Tria una part més marcada de l\'element.'); return; }
-      const cols=Math.floor((W-tw)/st)+1, rows=Math.floor((H-th)/st)+1, sm=new Float32Array(cols*rows);
-      for(let r=0;r<rows;r++){
-        for(let q=0;q<cols;q++){
-          const base0=(r*st)*W+q*st; let sI=0,sI2=0,sIt=0;
-          for(let k=0;k<n;k++){ const v=g[base0+ofs[k]]; sI+=v; sI2+=v*v; sIt+=v*tz[k]; }
-          const varr=sI2-sI*sI/n;
-          sm[r*cols+q]= varr<n*9 ? 0 : sIt/(Math.sqrt(varr)*tn);
-        }
-      }
-      scoreMap={sm,cols,rows,tw,th,s,st};
-      collectRep(); draw();
-      msg(repTotal>1?'Si en falten, baixa la semblança; si en sobren, puja-la.':'No s\'ha trobat cap altre element: baixa la semblança o tria una altra part de l\'element.');
+      const P=planes(cc.getImageData(0,0,W,H).data,W,H);
+      const t={x:tpl.x*s,y:tpl.y*s,w:tpl.w*s,h:tpl.h*s};
+      const r=matchColor(P,W,H,t,REP_SCALES,REP_FLOOR,140);
+      repC=r.map(h=>({x:h.x/s,y:h.y/s,w:h.w/s,h:h.h/s,score:h.score}));
+      repOv={}; adj=0; $('adjv').textContent='±0';
+      draw(); repMsg();
     }catch(e){ msg('Error: '+e.message); }
     finally{ busy(false); }
   },30);
 }
-function collectRep(){
-  if(!scoreMap) return;
-  const {sm,cols,tw,th,s,st}=scoreMap, thr=$('sim').value/100;
-  $('simv').textContent=$('sim').value+'%';
-  const cand=[]; for(let i=0;i<sm.length;i++) if(sm[i]>=thr) cand.push(i);
-  cand.sort((a,b)=>sm[b]-sm[a]);
-  const acc=[];
-  for(const i of cand){
-    const x=(i%cols)*st, y=((i/cols)|0)*st; let ok=true;
-    for(const a of acc){ if(Math.abs(a.x-x)<tw*0.55&&Math.abs(a.y-y)<th*0.55){ok=false;break;} }
-    if(ok) acc.push({x,y});
-  }
-  repHits=acc.map(a=>({x:a.x/s,y:a.y/s,w:tw/s,h:th/s})).sort((a,b)=>(Math.round(a.y/(a.h*0.6))-Math.round(b.y/(b.h*0.6)))||(a.x-b.x));
-  repTotal=repHits.length;
+function repMsg(){
+  const on=repC.filter((h,i)=>repOn(i)).length, off=repC.length-on;
+  msg(on>1||off? 'Línia contínua = comptat. Línia discontínua = possible coincidència: tocar-la l\'afegeix, i tocar-ne una de comptada la treu.':'No s\'ha trobat cap altre element: baixa la semblança o tria una altra part de l\'element.');
 }
 function drawRep(fs){
-  if(tpl){ ctx.setLineDash([8,6]); ctx.strokeStyle='#fff'; ctx.strokeRect(tpl.x,tpl.y,tpl.w,tpl.h); ctx.setLineDash([]); }
+  if(tpl){ ctx.setLineDash([3,5]); ctx.strokeStyle='#fff'; ctx.strokeRect(tpl.x,tpl.y,tpl.w,tpl.h); ctx.setLineDash([]); }
   else if(corner){ ctx.fillStyle='#ffb020'; ctx.beginPath(); ctx.arc(corner[0],corner[1],fs*.5,0,7); ctx.fill(); }
-  repHits.forEach((h,i)=>{ ctx.strokeStyle='#3ddc97'; ctx.strokeRect(h.x,h.y,h.w,h.h); label(String(i+1),h.x+h.w/2,h.y+fs*.9,fs); });
-  total(repTotal);
+  const order=repC.map((h,i)=>i).sort((a,b)=>(Math.round(repC[a].y/(repC[a].h*0.6))-Math.round(repC[b].y/(repC[b].h*0.6)))||(repC[a].x-repC[b].x));
+  let n=0;
+  order.forEach(i=>{
+    const h=repC[i], on=repOn(i);
+    if(on){ n++; ctx.setLineDash([]); ctx.strokeStyle='#3ddc97'; ctx.strokeRect(h.x,h.y,h.w,h.h); label(String(n),h.x+h.w/2,h.y+fs*.9,fs); }
+    else { ctx.setLineDash([8,6]); ctx.strokeStyle='#ffffffaa'; ctx.strokeRect(h.x,h.y,h.w,h.h); ctx.setLineDash([]); label(Math.round(h.score*100)+'%',h.x+h.w/2,h.y+fs*.9,fs*.8); }
+  });
+  ctx.setLineDash([]);
+  total(n);
 }
-$('sim').oninput=()=>{ if(scoreMap){ collectRep(); draw(); } else $('simv').textContent=$('sim').value+'%'; };
-$('resetSel').onclick=()=>{ tpl=null; corner=null; scoreMap=null; repHits=[]; repTotal=0; if(hasImg){ draw(); msg('Toca la cantonada superior esquerra d\'UN element.'); } };
+$('sim').oninput=()=>{ $('simv').textContent=$('sim').value+'%'; if(repC.length){ draw(); repMsg(); } };
+$('resetSel').onclick=()=>{ tpl=null; corner=null; repC=[]; repOv={}; adj=0; $('adjv').textContent='±0'; if(hasImg){ draw(); msg('Toca la cantonada superior esquerra d\'UN element.'); } };
 
+/* ---------- Mode automàtic (valida que el que compta sigui realment igual) ---------- */
 /* ---------- Mode automàtic (sense instruccions, sense identificar res) ---------- */
 function boxBlur(a,W,H,r){
   const t=new Float32Array(a.length), o=new Float32Array(a.length), k=2*r+1;
@@ -317,9 +346,32 @@ function periodic(g,W,H,bb,vertical){
   const counts=[...new Set(strong.map(l=>Math.round(L/l)))].filter(n=>n>=2);
   return {r:rmax,lag:main,count:Math.round(L/main),counts,a0,L,vertical,bb};
 }
+// Correlació de la imatge amb ella mateixa desplaçada 'lag' px (només dins la caixa del primer pla).
+// Si hi ha N còpies iguals separades per 'lag', el resultat és alt; en una escena variada és baix.
+function shiftNCC(g,W,H,bb,lag,alongX){
+  lag=Math.round(lag); if(lag<3) return -1;
+  const x0=bb.x0,x1=bb.x1,y0=bb.y0,y1=bb.y1;
+  if((alongX?x1-x0:y1-y0)-lag<8) return -1;
+  let n=0,sa=0,sb=0,saa=0,sbb=0,sab=0;
+  const ex=alongX?x1-lag:x1, ey=alongX?y1:y1-lag, ox=alongX?lag:0, oy=alongX?0:lag;
+  for(let y=y0;y<=ey;y+=2) for(let x=x0;x<=ex;x+=2){
+    const a=g[y*W+x], b=g[(y+oy)*W+x+ox];
+    n++; sa+=a; sb+=b; saa+=a*a; sbb+=b*b; sab+=a*b;
+  }
+  if(n<30) return -1;
+  const va=saa-sa*sa/n, vb=sbb-sb*sb/n;
+  if(va<n*4||vb<n*4) return 0;
+  return (sab-sa*sb/n)/Math.sqrt(va*vb);
+}
+function simAt(g,W,H,bb,lag,alongX,count){
+  // mitjana sobre 1 i 2 períodes (si hi caben)
+  const r=[shiftNCC(g,W,H,bb,lag,alongX)];
+  if(count>=3) r.push(shiftNCC(g,W,H,bb,lag*2,alongX));
+  const ok=r.filter(v=>v>=-0.5); return ok.length?ok.reduce((s,v)=>s+v,0)/ok.length:-1;
+}
+const SIM_MIN=0.5;
 function autoAnalyze(d,W,H){
   const N=W*H;
-  // fons = mediana de la vora de la imatge
   const bw=Math.max(2,Math.round(Math.min(W,H)*0.03)), bs=[[],[],[]];
   for(let y=0;y<H;y++) for(let x=0;x<W;x++) if(x<bw||x>=W-bw||y<bw||y>=H-bw){ const j=(y*W+x)*4; bs[0].push(d[j]); bs[1].push(d[j+1]); bs[2].push(d[j+2]); }
   const med=a=>{a.sort((p,q)=>p-q);return a[a.length>>1]}; const bg=[med(bs[0]),med(bs[1]),med(bs[2])];
@@ -327,8 +379,7 @@ function autoAnalyze(d,W,H){
   for(let i=0;i<N;i++){ const j=i*4,a=d[j]-bg[0],b=d[j+1]-bg[1],c=d[j+2]-bg[2]; dist[i]=Math.sqrt(a*a+b*b+c*c); gray[i]=0.299*d[j]+0.587*d[j+1]+0.114*d[j+2]; }
   dist=boxBlur(dist,W,H,1);
   const thr=Math.max(28,otsuThr(dist,442));
-  const fg=new Uint8Array(N); for(let i=0;i<N;i++) fg[i]=dist[i]>thr?1:0;
-  // components connexos
+  const fg=new Uint8Array(N); let fgN=0; for(let i=0;i<N;i++){ fg[i]=dist[i]>thr?1:0; fgN+=fg[i]; }
   const seen=new Uint8Array(N), stack=new Int32Array(N), minA=Math.max(12,Math.round(N*0.0004)), comps=[];
   for(let s=0;s<N;s++){
     if(!fg[s]||seen[s]) continue;
@@ -340,31 +391,50 @@ function autoAnalyze(d,W,H){
   }
   const tot=comps.reduce((s,c)=>s+c.area,0), maxA=comps.reduce((m,c)=>Math.max(m,c.area),0);
   const merged=!comps.length||maxA/tot>0.6;
+  const fgFrac=fgN/N;
+  const bb=comps.length?{x0:Math.min(...comps.map(c=>c.x0)),y0:Math.min(...comps.map(c=>c.y0)),x1:Math.max(...comps.map(c=>c.x1)),y1:Math.max(...comps.map(c=>c.y1))}:null;
+  const bbFrac=bb?((bb.x1-bb.x0)*(bb.y1-bb.y0))/N:0;
+  // Escena «plena»: el primer pla ocupa gairebé tota la imatge (no hi ha fons net) -> no es pot comptar sol
+  const full=fgFrac>0.5&&bbFrac>0.8;
   if(comps.length>2){ const a=comps.map(c=>c.area).sort((p,q)=>p-q),mA=a[a.length>>1]; comps.forEach(c=>{ if(c.area>1.6*mA) c.n=Math.max(1,Math.round(c.area/mA)); }); }
   const ccCount=comps.reduce((s,c)=>s+c.n,0);
   const cands=[];
-  if(ccCount>=1) cands.push({kind:'cc',count:ccCount,comps});
-  // escaneig per files/columnes
+  // 1) Components separats: només vàlid si tots tenen una mida semblant
+  if(ccCount>=1&&!full){
+    const a=comps.map(c=>c.area/c.n).sort((p,q)=>p-q), m=a[a.length>>1];
+    const similar=a.filter(v=>v>=0.5*m&&v<=2*m).length/a.length;
+    cands.push({kind:'cc',count:ccCount,comps,sim:similar,valid:similar>=0.75&&(ccCount===1||!merged||ccCount<=3)});
+  }
+  // 2) Repetició en fila (escaneig)
   const sh=scanLines(fg,W,H,true), sv=scanLines(fg,W,H,false), sc=sh.count>=sv.count?sh:sv;
-  if(sc.count>=2) cands.push({kind:'scan',count:sc.count,scan:sc});
-  // periodicitat dins la caixa del primer pla
-  let per=null;
-  if(comps.length){
-    const bb={x0:Math.min(...comps.map(c=>c.x0)),y0:Math.min(...comps.map(c=>c.y0)),x1:Math.max(...comps.map(c=>c.x1)),y1:Math.max(...comps.map(c=>c.y1))};
+  if(sc.count>=2&&bb&&!full){
+    const cs=sc.runs.map(r=>(r[0]+r[1])/2), df=[]; for(let i=1;i<cs.length;i++) df.push(cs[i]-cs[i-1]);
+    const sd=df.slice().sort((p,q)=>p-q), pitch=sd[sd.length>>1];
+    const regular=df.every(v=>Math.abs(v-pitch)<=0.4*pitch);
+    const sim=regular?simAt(gray,W,H,bb,pitch,sc.horizontal,sc.count):0;
+    cands.push({kind:'scan',count:sc.count,scan:sc,sim,valid:regular&&sim>=SIM_MIN});
+  }
+  // 3) Patró periòdic dins la caixa del primer pla
+  if(bb){
     const pv=periodic(gray,W,H,bb,true), ph=periodic(gray,W,H,bb,false);
-    per=(pv&&(!ph||pv.r>=ph.r))?pv:ph;
+    const per=(pv&&(!ph||pv.r>=ph.r))?pv:ph;
     if(per&&per.r>=0.3&&per.count>=2){
-      cands.push({kind:'per',count:per.count,per});
-      per.counts.forEach(n=>{ if(n!==per.count) cands.push({kind:'per',count:n,per:Object.assign({},per,{count:n}),alt:true}); });
+      const all=[per.count].concat(per.counts.filter(n=>n!==per.count));
+      all.forEach((n,i)=>{
+        const sim=simAt(gray,W,H,bb,per.L/n,per.vertical,n);
+        cands.push({kind:'per',count:n,per:Object.assign({},per,{count:n}),sim,valid:sim>=SIM_MIN&&!full,alt:i>0});
+      });
     }
   }
-  let chosen=0;
-  const pick=k=>cands.findIndex(c=>c.kind===k&&!c.alt);
-  if(!merged&&ccCount>=2) chosen=pick('cc');
-  else if(pick('per')>=0) chosen=pick('per');
-  else if(pick('scan')>=0) chosen=pick('scan');
-  else chosen=Math.max(0,pick('cc'));
-  return {cands,chosen,merged,ccCount,thr,bg};
+  // Tria: només entre candidats validats. Si cap ho és, no inventa res.
+  let chosen=-1;
+  const ok=cands.map((c,i)=>[c,i]).filter(([c])=>c.valid);
+  const best=k=>{const l=ok.filter(([c])=>c.kind===k&&(k!=='per'||!c.alt)); return l.length?l[0][1]:-1;};
+  if(ccCount>=2&&best('cc')>=0&&!merged) chosen=best('cc');
+  else if(best('per')>=0) chosen=best('per');
+  else if(best('scan')>=0) chosen=best('scan');
+  else if(best('cc')>=0) chosen=best('cc');
+  return {cands,chosen,merged,full,fgFrac,bbFrac,ccCount,thr,bg,uncertain:chosen<0};
 }
 
 
@@ -388,14 +458,18 @@ function runAuto(){
 }
 function refreshAuto(){
   const box=$('autoChips'); box.innerHTML='';
-  if(!autoRes||!autoRes.cands.length){
-    draw(); $('autoWhy').textContent='';
-    msg('No he detectat cap element. Prova amb una foto amb més contrast o amb els altres modes.'); return;
+  const goRep=$('goRep');
+  if(!autoRes||autoRes.uncertain){
+    goRep.hidden=false; draw();
+    $('autoWhy').textContent='';
+    msg('No hi ha un grup clar d\'elements iguals. Probablement hi ha objectes de tipus diferents. Tria\'n un i busco els que s\'hi assemblen.');
+    return;
   }
-  // chips: l'opció triada primer; un sol chip per nombre
-  const order=autoRes.cands.map((c,i)=>i).sort((a,b)=>(a===autoSel?-1:b===autoSel?1:a-b));
+  const chosen=autoRes.cands[autoSel];
+  const weak=chosen.kind==='cc'&&chosen.count===1;
+  goRep.hidden=!weak;
   const seen=new Set(), items=[];
-  order.forEach(i=>{ const c=autoRes.cands[i]; if(seen.has(c.count)) return; seen.add(c.count); items.push([i,c]); });
+  [autoSel].concat(autoRes.cands.map((c,i)=>i)).forEach(i=>{ const c=autoRes.cands[i]; if(!c.valid||seen.has(c.count)) return; seen.add(c.count); items.push([i,c]); });
   items.sort((a,b)=>a[1].count-b[1].count).forEach(([i,c])=>{
     const el=document.createElement('div'); el.className='chip'+(i===autoSel?' on':'');
     el.textContent=c.count+' · '+KIND_TXT[c.kind];
@@ -403,10 +477,11 @@ function refreshAuto(){
     box.appendChild(el);
   });
   $('autoWhy').textContent='Si no és el nombre correcte, toca una altra opció o corregeix-lo amb + / −.';
-  draw(); msg('');
+  draw();
+  msg(weak?'Només he trobat un sol bloc. Si hi ha diversos elements junts, tria\'n un i els busco.':'');
 }
 function drawAuto(fs){
-  if(!autoRes||!autoRes.cands.length){ total(0); return; }
+  if(!autoRes||autoRes.uncertain){ total(0); return; }
   const c=autoRes.cands[autoSel], k=1/autoS; let n=0;
   if(c.kind==='cc'){
     c.comps.forEach(b=>{
@@ -433,6 +508,8 @@ function drawAuto(fs){
   }
   total(c.count);
 }
+
+$('goRep').onclick=()=>setMode('rep');
 
 /* ---------- Dibuix ---------- */
 function draw(){
