@@ -77,15 +77,15 @@
   <div class="msg" id="msg"></div>
 
   <section class="panel" id="pAuto">
-    <div class="msg" style="margin:0">Compta sol, sense dir-li què és. Pots fer la foto i ja està.</div>
+    <div class="msg" style="margin:0">Compta sol, sense dir-li què és. Si no ho veu clar, no inventa res: passa a Plantilla.</div>
     <div class="chips" id="autoChips"></div>
     <div class="msg" id="autoWhy" style="margin:0"></div>
     <button id="goRep" hidden>👆 Triar un element i buscar-ne de semblants</button>
   </section>
 
   <section class="panel" id="pRep" hidden>
-    <div class="msg" style="margin:0">Per a escenes amb objectes diferents. <b>Toca dues vegades</b> la foto: cantonada superior esquerra i inferior dreta d'<b>UN</b> element. Busco els semblants (en color i a diferents mides). Les <b>línies discontínues</b> són possibles coincidències: <b>toca-les per afegir-les</b> o toca'n una de comptada per treure-la.</div>
-    <div class="ctl"><span>Semblança mínima: <b id="simv">55%</b></span><input id="sim" type="range" min="10" max="95" value="55"></div>
+    <div class="msg" style="margin:0">Per a escenes amb objectes diferents. <b>Toca dues vegades</b> la foto: cantonada superior esquerra i inferior dreta d'<b>UN</b> element. Les <b>línies discontínues</b> són possibles coincidències: <b>toca-les per afegir-les</b> o toca'n una de comptada per treure-la.</div>
+    <div class="ctl"><span>Semblança mínima: <b id="simv">45%</b></span><input id="sim" type="range" min="10" max="95" value="45"></div>
     <button id="resetSel">↺ Triar un altre element</button>
   </section>
 
@@ -109,7 +109,9 @@ let hasImg=false, mode='auto';
 let picked=null, pickedAt=null, colorMsg='', blobs=[], adj=0, colorTotal=0;
 let autoRes=null, autoSel=0, autoS=1;
 let tpl=null, corner=null, repC=[], repOv={};
-
+// cache per recalcular només la validació del slider
+let repCache=null; // {raw:[{x,y,w,h,score}], s}
+let colorTimer=null;
 
 function busy(on,t){ $('busy').classList.toggle('show',on); if(t)$('busyTxt').textContent=t; }
 function msg(t){ $('msg').textContent=t||''; }
@@ -125,8 +127,10 @@ function loadFile(f,inp){
     bctx.drawImage(im,0,0,base.width,base.height);
     URL.revokeObjectURL(url); if(inp) inp.value='';
     hasImg=true; $('empty').hidden=true; view.hidden=false;
-    colorTotal=0; autoRes=null; autoSel=0; tpl=null; corner=null; repC=[]; repOv={}; blobs=[]; adj=0; picked=null; pickedAt=null; ctx.drawImage(base,0,0); $('sw').style.background='#444';
-    updateAdj(); run();
+    // neteja d'estat
+    if(colorTimer){clearTimeout(colorTimer);colorTimer=null;}
+    colorTotal=0; autoRes=null; autoSel=0; tpl=null; corner=null; repC=[]; repOv={}; repCache=null; blobs=[]; adj=0; picked=null; pickedAt=null;
+    ctx.drawImage(base,0,0); $('sw').style.background='#444'; updateAdj(); run();
   };
   im.onerror=()=>{ if(inp) inp.value=''; msg('No s\'ha pogut obrir la imatge.'); };
   im.src=url;
@@ -150,13 +154,10 @@ function run(){
 }
 
 /* ---------- Mode color ---------- */
-// Tancament morfològic (dilatar i erosionar) amb sumes acumulades: uneix parts separades per espais de menys de 2r px
 function closeMask(mask,W,H,r){
   const W1=W+1, I=new Int32Array(W1*(H+1));
-  const box=(src)=>{ // retorna funció que dóna (suma, àrea) de la finestra retallada
-    I.fill(0);
-    for(let y=0;y<H;y++){ let row=0; for(let x=0;x<W;x++){ row+=src[y*W+x]; I[(y+1)*W1+x+1]=I[y*W1+x+1]+row; } }
-  };
+  const box=(src)=>{ I.fill(0);
+    for(let y=0;y<H;y++){ let row=0; for(let x=0;x<W;x++){ row+=src[y*W+x]; I[(y+1)*W1+x+1]=I[y*W1+x+1]+row; } } };
   const out=new Uint8Array(W*H), dil=new Uint8Array(W*H);
   box(mask);
   for(let y=0;y<H;y++){ const y0=Math.max(0,y-r),y1=Math.min(H-1,y+r)+1;
@@ -172,33 +173,34 @@ function runColor(){
   if(!hasImg||!picked) return;
   const W=base.width,H=base.height,N=W*H, d=bctx.getImageData(0,0,W,H).data;
   const tol=+$('tol').value, t2=tol*tol, [pr,pg,pb]=picked;
-  $('tolv').textContent=tol; $('minv').textContent=$('min').value;
+  $('tolv').textContent=tol; $('minv').textContent=$('min').value; $('joinv').textContent=$('join').value;
   let mask=new Uint8Array(N);
   for(let i=0;i<N;i++){const j=i*4,a=d[j]-pr,b=d[j+1]-pg,c=d[j+2]-pb; if(a*a+b*b+c*c<=t2) mask[i]=1;}
-  const jr=+$('join').value; $('joinv').textContent=jr; if(jr>0) mask=closeMask(mask,W,H,jr);
-  // màscara visual
+  const jr=+$('join').value; if(jr>0) mask=closeMask(mask,W,H,jr);
   maskCv.width=W;maskCv.height=H;
   const mi=maskCv.getContext('2d').createImageData(W,H);
   for(let i=0;i<N;i++) if(mask[i]){const j=i*4;mi.data[j]=255;mi.data[j+1]=0;mi.data[j+2]=120;mi.data[j+3]=130;}
   maskCv.getContext('2d').putImageData(mi,0,0);
-  // components connexos (amb mapa d'etiquetes per saber quina és la que s'ha tocat)
   const seen=new Uint8Array(N), stack=new Int32Array(N), lab=new Int32Array(N).fill(-1), all=[];
+  // Marcar la vora per descartar fons i elements tallats
+  const onBorder=(x,y)=> x<=1||y<=1||x>=W-2||y>=H-2;
   for(let s=0;s<N;s++){
     if(!mask[s]||seen[s]) continue;
     let sp=0; stack[sp++]=s; seen[s]=1;
-    let area=0,sx=0,sy=0,x0=W,y0=H,x1=0,y1=0; const id=all.length;
+    let area=0,sx=0,sy=0,x0=W,y0=H,x1=0,y1=0, touchesBorder=false;
+    const id=all.length;
     while(sp){
       const p=stack[--sp], x=p%W, y=(p/W)|0;
       lab[p]=id; area++; sx+=x; sy+=y;
+      if(onBorder(x,y)) touchesBorder=true;
       if(x<x0)x0=x; if(x>x1)x1=x; if(y<y0)y0=y; if(y>y1)y1=y;
       if(x>0&&mask[p-1]&&!seen[p-1]){seen[p-1]=1;stack[sp++]=p-1}
       if(x<W-1&&mask[p+1]&&!seen[p+1]){seen[p+1]=1;stack[sp++]=p+1}
       if(y>0&&mask[p-W]&&!seen[p-W]){seen[p-W]=1;stack[sp++]=p-W}
       if(y<H-1&&mask[p+W]&&!seen[p+W]){seen[p+W]=1;stack[sp++]=p+W}
     }
-    all.push({area,cx:sx/area,cy:sy/area,x0,y0,x1,y1,n:1});
+    all.push({area,cx:sx/area,cy:sy/area,x0,y0,x1,y1,n:1,touchesBorder});
   }
-  // Referència = l'element que has tocat (mira també els píxels del voltant)
   let ref=null;
   if(pickedAt){
     for(let r=0;r<=6&&!ref;r++) for(let dy=-r;dy<=r&&!ref;dy++) for(let dx=-r;dx<=r&&!ref;dx++){
@@ -209,27 +211,35 @@ function runColor(){
   blobs=[]; colorTotal=0;
   if(!ref){ draw(); colorMsg='No he trobat l\'element que has tocat amb aquest color. Puja la tolerància o toca un altre punt.'; msg(colorMsg); return; }
   if(ref.area>0.15*N){ draw(); colorMsg='Has tocat una zona molt gran (el fons, una paret…). Toca UN exemplar de les coses que vols comptar.'; msg(colorMsg); return; }
+  if(ref.touchesBorder){ draw(); colorMsg='Has tocat una zona que toca la vora (probablement el fons). Toca un exemplar ben endins.'; msg(colorMsg); return; }
   const minA=+$('min').value, A=ref.area, split=$('split').checked;
   let ignored=0;
   all.forEach(b=>{
-    if(b.area<minA) return;                       // soroll
-    if(b.area<0.35*A||b.area>4*A){ ignored++; return; } // mida molt diferent de l'exemplar: no és d'aquest grup
+    if(b.area<minA) return;
+    if(b.touchesBorder) { ignored++; return; } // fons que ha entrat per tolerància
+    if(b.area<0.35*A||b.area>4*A){ ignored++; return; }
+    // split només quan és clarament > 1.6x; no arrodoneix a l'atzar
     if(split&&b.area>1.6*A) b.n=Math.max(1,Math.round(b.area/A));
     blobs.push(b);
   });
   colorTotal=blobs.reduce((s,b)=>s+b.n,0);
   draw();
-  colorMsg=colorTotal?('Compto les taques de mida semblant a l\'exemplar'+(ignored?' ('+ignored+' d\'altres mides ignorades)':'')+'. Si en falten o en sobren, ajusta la tolerància o fes servir + / −.'):'Res detectat amb aquest color: puja la tolerància o toca un altre exemplar.';
+  colorMsg=colorTotal?('Compto les taques de mida semblant a l\'exemplar'+(ignored?' ('+ignored+' d\'altres mides/vora ignorades)':'')+'. Ajusta la tolerància si cal.'):'Res detectat amb aquest color: puja la tolerància o toca un altre exemplar.';
   msg(colorMsg);
 }
-['tol','min','join'].forEach(id=>$(id).oninput=()=>{$('tolv').textContent=$('tol').value;$('minv').textContent=$('min').value;$('joinv').textContent=$('join').value;clearTimeout(runColor.t);runColor.t=setTimeout(runColor,120)});
+['tol','min','join'].forEach(id=>$(id).oninput=()=>{
+  $('tolv').textContent=$('tol').value;$('minv').textContent=$('min').value;$('joinv').textContent=$('join').value;
+  if(colorTimer) clearTimeout(colorTimer);
+  colorTimer=setTimeout(runColor,140);
+});
 $('split').onchange=runColor;
 $('showmask').onchange=draw;
 
-/* ---------- Mode plantilla (tria UN element i en busca de semblants, en color i a diverses mides) ---------- */
-const RM=360; // mida màxima d'anàlisi (px)
+/* ---------- Mode plantilla ---------- */
+const RM=360;
 const REP_SCALES=[0.6,0.7,0.8,0.9,1,1.12,1.25,1.45];
-const REP_FLOOR=0.12, REP_MAX=14;
+const REP_FLOOR=0.35; // puja per evitar falses coincidències
+const REP_MAX=20;
 function planes(d,W,H){const P=[new Float32Array(W*H),new Float32Array(W*H),new Float32Array(W*H)];for(let i=0;i<W*H;i++){P[0][i]=d[i*4];P[1][i]=d[i*4+1];P[2][i]=d[i*4+2]}return P}
 function resizePlane(g,W,H,x0,y0,w,h,nw,nh){
   const o=new Float32Array(nw*nh);
@@ -241,7 +251,7 @@ function resizePlane(g,W,H,x0,y0,w,h,nw,nh){
   }
   return o;
 }
-// Correlació normalitzada conjunta RGB × penalització per diferència de color mitjà
+// NCC conjunta RGB, normalitzada correctament per canal
 function matchColor(P,W,H,tpl,scales,thr,cw){
   const all=[];
   for(const sc of scales){
@@ -250,30 +260,39 @@ function matchColor(P,W,H,tpl,scales,thr,cw){
     const T=P.map(p=>resizePlane(p,W,H,tpl.x,tpl.y,tpl.w,tpl.h,tw,th));
     const st=Math.max(1,Math.round(Math.min(tw,th)/24));
     const ofs=[];for(let j=0;j<th;j+=st)for(let i=0;i<tw;i+=st)ofs.push([j*W+i,j*tw+i]);
-    const n=ofs.length,tz=[[],[],[]],tm=[0,0,0];let tn=0;
-    for(let c=0;c<3;c++){let m=0;for(const o of ofs){m+=T[c][o[1]]}m/=n;tm[c]=m;for(const o of ofs){const v=T[c][o[1]]-m;tz[c].push(v);tn+=v*v}}
-    tn=Math.sqrt(tn); if(tn<1) continue;
+    const n=ofs.length,tz=[[],[],[]],tm=[0,0,0];
+    for(let c=0;c<3;c++){let m=0;for(const o of ofs){m+=T[c][o[1]]}m/=n;tm[c]=m;for(const o of ofs){tz[c].push(T[c][o[1]]-m)}}
+    // norma total del template (suma dels 3 canals)
+    let tn2=0; for(let c=0;c<3;c++) for(const v of tz[c]) tn2+=v*v;
+    const tn=Math.sqrt(tn2); if(tn<1) continue;
     const pos=Math.max(2,Math.round(Math.min(tw,th)/14));
     for(let y=0;y+th<=H;y+=pos)for(let x=0;x+tw<=W;x+=pos){
-      const b=y*W+x;let vv=0,st2=0,dc=0;
-      for(let c=0;c<3;c++){const p=P[c];let sI=0,sI2=0,sIt=0;
-        for(let k=0;k<n;k++){const v=p[b+ofs[k][0]];sI+=v;sI2+=v*v;sIt+=v*tz[c][k]}
-        vv+=sI2-sI*sI/n;st2+=sIt;const dm=sI/n-tm[c];dc+=dm*dm}
+      const b=y*W+x;
+      let vv=0,sIt=0,dc=0;
+      for(let c=0;c<3;c++){const p=P[c];let sI=0,sI2=0,sItc=0;
+        for(let k=0;k<n;k++){const v=p[b+ofs[k][0]];sI+=v;sI2+=v*v;sItc+=v*tz[c][k]}
+        vv+=sI2-sI*sI/n; sIt+=sItc; const dm=sI/n-tm[c]; dc+=dm*dm;
+      }
       if(vv<n*27) continue;
-      const s=(st2/(Math.sqrt(vv)*tn))*Math.max(0,1-Math.sqrt(dc)/cw);
+      const s=(sIt/(Math.sqrt(vv)*tn))*Math.max(0,1-Math.sqrt(dc)/(cw*Math.sqrt(3)));
       if(s>=thr) all.push({x,y,w:tw,h:th,score:s});
     }
   }
   all.sort((a,b)=>b.score-a.score);
   const keep=[];
-  for(const c of all){let ok=true;for(const k of keep){
-    const ox=Math.max(0,Math.min(c.x+c.w,k.x+k.w)-Math.max(c.x,k.x)),oy=Math.max(0,Math.min(c.y+c.h,k.y+k.h)-Math.max(c.y,k.y));
-    if(ox*oy/Math.min(c.w*c.h,k.w*k.h)>0.3){ok=false;break}}
-    if(ok){keep.push(c); if(keep.length>=REP_MAX) break;}}
+  for(const c of all){
+    let ok=true;
+    for(const k of keep){
+      const ox=Math.max(0,Math.min(c.x+c.w,k.x+k.w)-Math.max(c.x,k.x));
+      const oy=Math.max(0,Math.min(c.y+c.h,k.y+k.h)-Math.max(c.y,k.y));
+      if(ox>0&&oy>0&&(ox*oy)/Math.min(c.w*c.h,k.w*k.h)>0.3){ok=false;break}
+    }
+    if(ok){keep.push(c); if(keep.length>=REP_MAX) break;}
+  }
   return keep;
 }
 function repTap(x,y){
-  if(tpl){ // ja hi ha element triat: tocar un requadre l'inclou o l'exclou
+  if(tpl){
     let best=-1,ba=1e18;
     repC.forEach((h,i)=>{ if(x>=h.x&&x<=h.x+h.w&&y>=h.y&&y<=h.y+h.h&&h.w*h.h<ba){best=i;ba=h.w*h.h;} });
     if(best>=0){ repOv[best]=!repOn(best); draw(); }
@@ -297,8 +316,10 @@ function runRep(){
       const cc=c.getContext('2d',{willReadFrequently:true}); cc.drawImage(base,0,0,W,H);
       const P=planes(cc.getImageData(0,0,W,H).data,W,H);
       const t={x:tpl.x*s,y:tpl.y*s,w:tpl.w*s,h:tpl.h*s};
-      const r=matchColor(P,W,H,t,REP_SCALES,REP_FLOOR,140);
-      repC=r.map(h=>({x:h.x/s,y:h.y/s,w:h.w/s,h:h.h/s,score:h.score}));
+      // Guardem tots els candidats per sobre del floor (perquè el slider pugui mostrar-ne més sense recalcular)
+      const raw=matchColor(P,W,H,t,REP_SCALES,REP_FLOOR,140).map(h=>({x:h.x/s,y:h.y/s,w:h.w/s,h:h.h/s,score:h.score}));
+      repCache={raw,s};
+      repC=raw.slice();
       repOv={}; adj=0; $('adjv').textContent='±0';
       draw(); repMsg();
     }catch(e){ msg('Error: '+e.message); }
@@ -322,11 +343,18 @@ function drawRep(fs){
   ctx.setLineDash([]);
   total(n);
 }
-$('sim').oninput=()=>{ $('simv').textContent=$('sim').value+'%'; if(repC.length){ draw(); repMsg(); } };
-$('resetSel').onclick=()=>{ tpl=null; corner=null; repC=[]; repOv={}; adj=0; $('adjv').textContent='±0'; if(hasImg){ draw(); msg('Toca la cantonada superior esquerra d\'UN element.'); } };
+// BUGFIX important: en moure el slider, recalcula la llista visibles des del cache
+$('sim').oninput=()=>{
+  const thr=+$('sim').value/100; $('simv').textContent=$('sim').value+'%';
+  if(repCache){
+    repC=repCache.raw.filter(h=>h.score>=Math.max(REP_FLOOR, thr*0.75));
+    repOv={};
+  }
+  if(hasImg&&mode==='rep'){ draw(); repMsg(); }
+};
+$('resetSel').onclick=()=>{ tpl=null; corner=null; repC=[]; repOv={}; repCache=null; adj=0; $('adjv').textContent='±0'; if(hasImg){ draw(); msg('Toca la cantonada superior esquerra d\'UN element.'); } };
 
-/* ---------- Mode automàtic (valida que el que compta sigui realment igual) ---------- */
-/* ---------- Mode automàtic (sense instruccions, sense identificar res) ---------- */
+/* ---------- Mode automàtic ---------- */
 function boxBlur(a,W,H,r){
   const t=new Float32Array(a.length), o=new Float32Array(a.length), k=2*r+1;
   for(let y=0;y<H;y++) for(let x=0;x<W;x++){ let s=0; for(let q=-r;q<=r;q++){ s+=a[y*W+Math.min(W-1,Math.max(0,x+q))]; } t[y*W+x]=s/k; }
@@ -359,7 +387,6 @@ function scanLines(fg,W,H,horizontal){
   return {count:best,line,runs,horizontal};
 }
 function periodic(g,W,H,bb,vertical){
-  // perfil d'energia de vores dins la caixa; autocorrelació -> període -> nombre d'elements
   const x0=bb.x0,x1=bb.x1,y0=bb.y0,y1=bb.y1, a0=vertical?x0:y0, a1=vertical?x1:y1, L=a1-a0+1;
   if(L<20) return null;
   const P=new Float64Array(L);
@@ -374,16 +401,14 @@ function periodic(g,W,H,bb,vertical){
   if(lmax<=lmin+2) return null;
   const R=new Float64Array(lmax+2);
   for(let l=lmin-1;l<=lmax+1;l++){ let s=0; for(let i=0;i+l<L;i++) s+=Q[i]*Q[i+l]; R[l]=(s/(L-l))/e0; }
-  const pk=[]; for(let l=lmin;l<=lmax;l++) if(R[l]>R[l-1]&&R[l]>=R[l+1]&&R[l]>0.2) pk.push(l);
+  const pk=[]; for(let l=lmin;l<=lmax;l++) if(R[l]>R[l-1]&&R[l]>=R[l+1]&&R[l]>0.25) pk.push(l);
   if(!pk.length) return null;
   let rmax=0; for(const l of pk) if(R[l]>rmax) rmax=R[l];
-  const strong=pk.filter(l=>R[l]>=0.6*rmax);
-  const main=strong.find(l=>R[l]>=0.8*rmax);
+  const strong=pk.filter(l=>R[l]>=0.7*rmax);
+  const main=strong.find(l=>R[l]>=0.85*rmax);
   const counts=[...new Set(strong.map(l=>Math.round(L/l)))].filter(n=>n>=2);
   return {r:rmax,lag:main,count:Math.round(L/main),counts,a0,L,vertical,bb};
 }
-// Correlació de la imatge amb ella mateixa desplaçada 'lag' px (només dins la caixa del primer pla).
-// Si hi ha N còpies iguals separades per 'lag', el resultat és alt; en una escena variada és baix.
 function shiftNCC(g,W,H,bb,lag,alongX){
   lag=Math.round(lag); if(lag<3) return -1;
   const x0=bb.x0,x1=bb.x1,y0=bb.y0,y1=bb.y1;
@@ -400,7 +425,6 @@ function shiftNCC(g,W,H,bb,lag,alongX){
   return (sab-sa*sb/n)/Math.sqrt(va*vb);
 }
 function simAt(g,W,H,bb,lag,alongX,count){
-  // mitjana sobre 1 i 2 períodes (si hi caben)
   const r=[shiftNCC(g,W,H,bb,lag,alongX)];
   if(count>=3) r.push(shiftNCC(g,W,H,bb,lag*2,alongX));
   const ok=r.filter(v=>v>=-0.5); return ok.length?ok.reduce((s,v)=>s+v,0)/ok.length:-1;
@@ -409,16 +433,15 @@ function ctrlAt(g,W,H,bb,lag,alongX){
   const r=[shiftNCC(g,W,H,bb,lag*0.5,alongX),shiftNCC(g,W,H,bb,lag*1.5,alongX)].filter(v=>v>=-0.5);
   return r.length?r.reduce((s,v)=>s+v,0)/r.length:0;
 }
-const SIM_MIN=0.5, EXC_MIN=0.07;
+const SIM_MIN=0.62, EXC_MIN=0.12; // més estrictes
 function autoAnalyze(d,W,H){
   const N=W*H;
   const bw=Math.max(2,Math.round(Math.min(W,H)*0.03)), bs=[[],[],[]];
   for(let y=0;y<H;y++) for(let x=0;x<W;x++) if(x<bw||x>=W-bw||y<bw||y>=H-bw){ const j=(y*W+x)*4; bs[0].push(d[j]); bs[1].push(d[j+1]); bs[2].push(d[j+2]); }
   const med=a=>{a.sort((p,q)=>p-q);return a[a.length>>1]}; const bg=[med(bs[0]),med(bs[1]),med(bs[2])];
-  // El fons ha de ser net: si la vora de la foto té colors molt diferents (parets, prestatges…), no es pot separar objectes per fons
   let nearB=0,totB=0;
   for(let y=0;y<H;y++) for(let x=0;x<W;x++) if(x<bw||x>=W-bw||y<bw||y>=H-bw){ const j=(y*W+x)*4,a=d[j]-bg[0],b=d[j+1]-bg[1],c=d[j+2]-bg[2]; totB++; if(a*a+b*b+c*c<=45*45) nearB++; }
-  const bgFrac=nearB/totB, plain=bgFrac>=0.8;
+  const bgFrac=nearB/totB, plain=bgFrac>=0.85;
   let dist=new Float32Array(N), gray=new Float32Array(N);
   for(let i=0;i<N;i++){ const j=i*4,a=d[j]-bg[0],b=d[j+1]-bg[1],c=d[j+2]-bg[2]; dist[i]=Math.sqrt(a*a+b*b+c*c); gray[i]=0.299*d[j]+0.587*d[j+1]+0.114*d[j+2]; }
   dist=boxBlur(dist,W,H,1);
@@ -438,20 +461,16 @@ function autoAnalyze(d,W,H){
   const fgFrac=fgN/N;
   const bb=comps.length?{x0:Math.min(...comps.map(c=>c.x0)),y0:Math.min(...comps.map(c=>c.y0)),x1:Math.max(...comps.map(c=>c.x1)),y1:Math.max(...comps.map(c=>c.y1))}:null;
   const bbFrac=bb?((bb.x1-bb.x0)*(bb.y1-bb.y0))/N:0;
-  // Escena «plena»: el primer pla ocupa gairebé tota la imatge (no hi ha fons net) -> no es pot comptar sol
   const full=fgFrac>0.5&&bbFrac>0.8;
   if(comps.length>2){ const a=comps.map(c=>c.area).sort((p,q)=>p-q),mA=a[a.length>>1]; comps.forEach(c=>{ if(c.area>1.6*mA) c.n=Math.max(1,Math.round(c.area/mA)); }); }
   const ccCount=comps.reduce((s,c)=>s+c.n,0);
   const cands=[];
-  // 1) Components separats: només vàlid si tots tenen una mida semblant
   if(ccCount>=1&&!full){
-    // Semblança sobre les àrees REALS (sense dividir): ≥80% han de fer una mida comparable, i cap taca pot valer més de 3 elements
     const a=comps.map(c=>c.area).sort((p,q)=>p-q), m=a[a.length>>1];
     const similar=a.filter(v=>v>=0.5*m&&v<=2.5*m).length/a.length;
     const maxSplit=Math.max(...comps.map(c=>c.n));
     cands.push({kind:'cc',count:ccCount,comps,sim:similar,valid:plain&&similar>=0.8&&maxSplit<=3&&(ccCount===1||!merged||ccCount<=3)});
   }
-  // 2) Repetició en fila (escaneig)
   const sh=scanLines(fg,W,H,true), sv=scanLines(fg,W,H,false), sc=sh.count>=sv.count?sh:sv;
   if(sc.count>=2&&bb&&!full){
     const cs=sc.runs.map(r=>(r[0]+r[1])/2), df=[]; for(let i=1;i<cs.length;i++) df.push(cs[i]-cs[i-1]);
@@ -461,7 +480,6 @@ function autoAnalyze(d,W,H){
     const exc=regular?sim-ctrlAt(gray,W,H,bb,pitch,sc.horizontal):0;
     cands.push({kind:'scan',count:sc.count,scan:sc,sim,exc,valid:plain&&regular&&sim>=SIM_MIN&&exc>=EXC_MIN});
   }
-  // 3) Patró periòdic dins la caixa del primer pla
   if(bb){
     const pv=periodic(gray,W,H,bb,true), ph=periodic(gray,W,H,bb,false);
     const per=(pv&&(!ph||pv.r>=ph.r))?pv:ph;
@@ -474,7 +492,6 @@ function autoAnalyze(d,W,H){
       });
     }
   }
-  // Tria: només entre candidats validats. Si cap ho és, no inventa res.
   let chosen=-1;
   const ok=cands.map((c,i)=>[c,i]).filter(([c])=>c.valid);
   const best=k=>{const l=ok.filter(([c])=>c.kind===k&&(k!=='per'||!c.alt)); return l.length?l[0][1]:-1;};
@@ -485,8 +502,7 @@ function autoAnalyze(d,W,H){
   return {cands,chosen,merged,full,plain,bgFrac,fgFrac,bbFrac,ccCount,thr,bg,uncertain:chosen<0};
 }
 
-
-const AM=360; // mida màxima d'anàlisi (px)
+const AM=360;
 const KIND_TXT={cc:'separats',scan:'en fila',per:'patró repetit'};
 function runAuto(){
   if(!hasImg) return;
@@ -565,7 +581,6 @@ function draw(){
   ctx.drawImage(base,0,0);
   const lw=Math.max(2,view.width/300), fs=Math.max(12,view.width/45);
   ctx.lineWidth=lw; ctx.font='700 '+fs+'px system-ui,sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
-  let n=0;
   if(mode==='auto'){ drawAuto(fs); }
   else if(mode==='rep'){ drawRep(fs); }
   else {
@@ -587,7 +602,7 @@ function label(t,x,y,fs){
 function total(n){
   const t=Math.max(0,n+adj);
   $('total').textContent=t;
-  $('what').textContent='elements';
+  $('what').textContent='unitats';
 }
 function updateAdj(){ $('adjv').textContent=adj===0?'±0':(adj>0?'+'+adj:adj); if(hasImg){ if(mode==='col') total(colorTotal); else draw(); } }
 $('plus').onclick=()=>{adj++;updateAdj()}; $('minus').onclick=()=>{adj--;updateAdj()};
