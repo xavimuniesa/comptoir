@@ -6,7 +6,7 @@
 <meta name="theme-color" content="#14181f">
 <title>Comptador d'unitats</title>
 <style>
-  :root{--bg:#14181f;--card:#1d232d;--line:#2c3542;--txt:#eef2f7;--mut:#93a0b2;--acc:#ffb020;--acc2:#3ddc97}
+  :root{--bg:#14181f;--card:#1d232d;--line:#2c3542;--txt:#eef2f7;--mut:#93a0b2;--acc:#ffb020;--acc2:#3ddc97;--acc3:#5aa9ff}
   *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
   body{margin:0;background:var(--bg);color:var(--txt);font:16px/1.4 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;padding:max(12px,env(safe-area-inset-top)) 12px 40px}
   main{max-width:760px;margin:0 auto;display:grid;gap:12px}
@@ -16,6 +16,7 @@
   button,label.btn{background:var(--card);color:var(--txt);border:1px solid var(--line);border-radius:12px;padding:12px 14px;font:inherit;font-weight:600;cursor:pointer;flex:1;text-align:center;min-width:90px}
   button.primary,label.btn.primary{background:var(--acc);color:#1a1200;border-color:var(--acc)}
   button.on{background:var(--acc2);color:#04200f;border-color:var(--acc2)}
+  button.zoombtn.on{background:var(--acc3);color:#04203a;border-color:var(--acc3)}
   button:active,label.btn:active{transform:scale(.98)}
   input[type=file]{display:none}
   [hidden]{display:none!important}
@@ -41,7 +42,12 @@
   .sw{width:34px;height:34px;border-radius:8px;border:2px solid #fff6;background:#444;flex:none}
   .chk{display:flex;gap:8px;align-items:center;font-size:.95rem}
   .msg{font-size:.88rem;color:var(--mut);min-height:1.2em}
-  .modes button{min-width:0;padding:10px 4px;font-size:.85rem}
+  .modes button{min-width:0;padding:10px 4px;font-size:.82rem}
+  .gridctl{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .gridctl .ctl{display:grid;gap:4px}
+  .zoomwrap{position:absolute;top:8px;right:8px;display:flex;gap:6px;z-index:2}
+  .zoomwrap button{min-width:0;flex:none;padding:6px 10px;font-size:.8rem;border-radius:8px;background:#0008;border-color:#fff4;color:#fff}
+  .zoomwrap button.on{background:var(--acc3);color:#04203a;border-color:var(--acc3)}
 </style>
 </head>
 <body>
@@ -60,11 +66,16 @@
     <button id="mAuto" class="on">✨ Automàtic</button>
     <button id="mRep">🔁 Plantilla</button>
     <button id="mCol">🎨 Color</button>
+    <button id="mGrid">🧮 Graella</button>
   </div>
 
   <div class="stage">
     <div id="empty">Encara no hi ha cap imatge.<br>Fes una foto o tria-la de la galeria.</div>
     <canvas id="view" hidden></canvas>
+    <div class="zoomwrap">
+      <button id="zoomToggle" class="zoombtn">🔍 Zoom</button>
+      <button id="zoomOut" hidden>↺ Veure tot</button>
+    </div>
     <div class="busy" id="busy"><span id="busyTxt">…</span></div>
   </div>
 
@@ -77,10 +88,11 @@
   <div class="msg" id="msg"></div>
 
   <section class="panel" id="pAuto">
-    <div class="msg" style="margin:0">Compta sol, sense dir-li què és. Si no ho veu clar, no inventa res: passa a Plantilla.</div>
+    <div class="msg" style="margin:0">Compta sol, sense dir-li què és. Si no ho veu clar, no inventa res: passa a Plantilla o Graella.</div>
     <div class="chips" id="autoChips"></div>
     <div class="msg" id="autoWhy" style="margin:0"></div>
     <button id="goRep" hidden>👆 Triar un element i buscar-ne de semblants</button>
+    <button id="goGrid" hidden>🧮 Sembla una graella: comptar per files i columnes</button>
   </section>
 
   <section class="panel" id="pRep" hidden>
@@ -97,6 +109,17 @@
     <label class="chk"><input type="checkbox" id="split" checked> Separar objectes enganxats (estima per àrea)</label>
     <label class="chk"><input type="checkbox" id="showmask"> Mostrar la màscara de color</label>
   </section>
+
+  <section class="panel" id="pGrid" hidden>
+    <div class="msg" style="margin:0">Per a elements <b>alineats en files i columnes</b>. Toca <b>dues vegades</b> la imatge: la cantonada <b>superior esquerra</b> de la primera cel·la i la <b>inferior dreta</b> de l'última. L'app detecta files × columnes; pots ajustar-les amb els sliders.</div>
+    <div class="gridctl">
+      <div class="ctl"><span>Files: <b id="rowsv">auto</b></span><input id="rows" type="range" min="0" max="50" value="0"></div>
+      <div class="ctl"><span>Columnes: <b id="colsv">auto</b></span><input id="cols" type="range" min="0" max="50" value="0"></div>
+    </div>
+    <label class="chk"><input type="checkbox" id="gridTol"> Graella una mica irregular (relaxa tolerància)</label>
+    <div class="msg" id="gridInfo" style="margin:0"></div>
+    <button id="resetGrid">↺ Triar una altra graella</button>
+  </section>
 </main>
 
 <script>
@@ -108,10 +131,12 @@ const MAXD=1000;
 let hasImg=false, mode='auto';
 let picked=null, pickedAt=null, colorMsg='', blobs=[], adj=0, colorTotal=0;
 let autoRes=null, autoSel=0, autoS=1;
-let tpl=null, corner=null, repC=[], repOv={};
-// cache per recalcular només la validació del slider
-let repCache=null; // {raw:[{x,y,w,h,score}], s}
+let tpl=null, corner=null, repC=[], repOv={}, repCache=null;
 let colorTimer=null;
+// graella
+let gridBox=null, gridCorner=null, gridAuto=null, gridDetected=null;
+// zoom
+let zoom={active:false, cx:0, cy:0, scale:2.5, pendingTap:null};
 
 function busy(on,t){ $('busy').classList.toggle('show',on); if(t)$('busyTxt').textContent=t; }
 function msg(t){ $('msg').textContent=t||''; }
@@ -127,10 +152,11 @@ function loadFile(f,inp){
     bctx.drawImage(im,0,0,base.width,base.height);
     URL.revokeObjectURL(url); if(inp) inp.value='';
     hasImg=true; $('empty').hidden=true; view.hidden=false;
-    // neteja d'estat
     if(colorTimer){clearTimeout(colorTimer);colorTimer=null;}
     colorTotal=0; autoRes=null; autoSel=0; tpl=null; corner=null; repC=[]; repOv={}; repCache=null; blobs=[]; adj=0; picked=null; pickedAt=null;
-    ctx.drawImage(base,0,0); $('sw').style.background='#444'; updateAdj(); run();
+    gridBox=null; gridCorner=null; gridAuto=null; gridDetected=null;
+    zoom.active=false; zoom.pendingTap=null; $('zoomToggle').classList.remove('on'); $('zoomOut').hidden=true;
+    $('sw').style.background='#444'; updateAdj(); run();
   };
   im.onerror=()=>{ if(inp) inp.value=''; msg('No s\'ha pogut obrir la imatge.'); };
   im.src=url;
@@ -141,17 +167,51 @@ $('gal').onchange=e=>loadFile(e.target.files[0],e.target);
 /* ---------- Mode ---------- */
 function setMode(m){
   mode=m;
-  $('mAuto').classList.toggle('on',m==='auto'); $('mRep').classList.toggle('on',m==='rep'); $('mCol').classList.toggle('on',m==='col');
-  $('pAuto').hidden=m!=='auto'; $('pRep').hidden=m!=='rep'; $('pCol').hidden=m!=='col';
+  $('mAuto').classList.toggle('on',m==='auto'); $('mRep').classList.toggle('on',m==='rep');
+  $('mCol').classList.toggle('on',m==='col'); $('mGrid').classList.toggle('on',m==='grid');
+  $('pAuto').hidden=m!=='auto'; $('pRep').hidden=m!=='rep'; $('pCol').hidden=m!=='col'; $('pGrid').hidden=m!=='grid';
+  // sortir del zoom en canviar de mode (per no quedar-se bloquejat)
+  resetZoom(false);
   adj=0; updateAdj(); run();
 }
-$('mAuto').onclick=()=>setMode('auto'); $('mRep').onclick=()=>setMode('rep'); $('mCol').onclick=()=>setMode('col');
+$('mAuto').onclick=()=>setMode('auto'); $('mRep').onclick=()=>setMode('rep');
+$('mCol').onclick=()=>setMode('col'); $('mGrid').onclick=()=>setMode('grid');
 function run(){
   if(!hasImg) return;
   if(mode==='auto') runAuto();
   else if(mode==='rep'){ if(tpl) runRep(); else { draw(); msg('Toca la cantonada superior esquerra d\'UN element.'); } }
-  else { if(picked) runColor(); else { draw(); msg('Toca un exemplar a la imatge per triar-ne el color.'); } }
+  else if(mode==='col'){ if(picked) runColor(); else { draw(); msg('Toca un exemplar a la imatge per triar-ne el color.'); } }
+  else { if(gridBox) runGrid(); else { draw(); msg('Toca la cantonada superior esquerra de la primera cel·la.'); } }
 }
+
+/* ---------- Zoom ---------- */
+function resetZoom(redraw=true){
+  zoom.active=false; zoom.cx=0; zoom.cy=0; zoom.scale=2.5; zoom.pendingTap=null;
+  $('zoomToggle').classList.remove('on'); $('zoomOut').hidden=true;
+  if(redraw && hasImg) draw();
+}
+$('zoomToggle').onclick=()=>{
+  if(!hasImg) return;
+  zoom.active=!zoom.active;
+  $('zoomToggle').classList.toggle('on',zoom.active);
+  if(!zoom.active){ zoom.cx=0;zoom.cy=0;zoom.pendingTap=null; $('zoomOut').hidden=true; }
+  else { msg('Toca la imatge per fer zoom en un punt. Torna a tocar per actuar-hi.'); }
+  draw();
+};
+$('zoomOut').onclick=()=>{ zoom.cx=0;zoom.cy=0;zoom.pendingTap=null; $('zoomOut').hidden=true; draw(); };
+// Converteix coordenades del canvas (view) a coordenades de la imatge base (0..W-1, 0..H-1)
+function viewToBase(vx,vy){
+  if(!zoom.active || (zoom.cx===0&&zoom.cy===0&&!zoom.pendingTap)){
+    return [vx,vy];
+  }
+  // l'àrea visible correspon a un rectangle centrat a (cx,cy) de mida base/scale
+  const vw=view.width, vh=view.height, W=base.width, H=base.height;
+  const s=zoom.scale, sw=vw/s, sh=vh/s;
+  const x0=clamp(zoom.cx - sw/2, 0, Math.max(0,W-sw));
+  const y0=clamp(zoom.cy - sh/2, 0, Math.max(0,H-sh));
+  return [clamp(x0 + vx/s, 0, W-1), clamp(y0 + vy/s, 0, H-1)];
+}
+function clamp(v,a,b){ return v<a?a:v>b?b:v; }
 
 /* ---------- Mode color ---------- */
 function closeMask(mask,W,H,r){
@@ -182,7 +242,6 @@ function runColor(){
   for(let i=0;i<N;i++) if(mask[i]){const j=i*4;mi.data[j]=255;mi.data[j+1]=0;mi.data[j+2]=120;mi.data[j+3]=130;}
   maskCv.getContext('2d').putImageData(mi,0,0);
   const seen=new Uint8Array(N), stack=new Int32Array(N), lab=new Int32Array(N).fill(-1), all=[];
-  // Marcar la vora per descartar fons i elements tallats
   const onBorder=(x,y)=> x<=1||y<=1||x>=W-2||y>=H-2;
   for(let s=0;s<N;s++){
     if(!mask[s]||seen[s]) continue;
@@ -216,9 +275,8 @@ function runColor(){
   let ignored=0;
   all.forEach(b=>{
     if(b.area<minA) return;
-    if(b.touchesBorder) { ignored++; return; } // fons que ha entrat per tolerància
+    if(b.touchesBorder) { ignored++; return; }
     if(b.area<0.35*A||b.area>4*A){ ignored++; return; }
-    // split només quan és clarament > 1.6x; no arrodoneix a l'atzar
     if(split&&b.area>1.6*A) b.n=Math.max(1,Math.round(b.area/A));
     blobs.push(b);
   });
@@ -238,8 +296,7 @@ $('showmask').onchange=draw;
 /* ---------- Mode plantilla ---------- */
 const RM=360;
 const REP_SCALES=[0.6,0.7,0.8,0.9,1,1.12,1.25,1.45];
-const REP_FLOOR=0.35; // puja per evitar falses coincidències
-const REP_MAX=20;
+const REP_FLOOR=0.35, REP_MAX=20;
 function planes(d,W,H){const P=[new Float32Array(W*H),new Float32Array(W*H),new Float32Array(W*H)];for(let i=0;i<W*H;i++){P[0][i]=d[i*4];P[1][i]=d[i*4+1];P[2][i]=d[i*4+2]}return P}
 function resizePlane(g,W,H,x0,y0,w,h,nw,nh){
   const o=new Float32Array(nw*nh);
@@ -251,7 +308,6 @@ function resizePlane(g,W,H,x0,y0,w,h,nw,nh){
   }
   return o;
 }
-// NCC conjunta RGB, normalitzada correctament per canal
 function matchColor(P,W,H,tpl,scales,thr,cw){
   const all=[];
   for(const sc of scales){
@@ -262,7 +318,6 @@ function matchColor(P,W,H,tpl,scales,thr,cw){
     const ofs=[];for(let j=0;j<th;j+=st)for(let i=0;i<tw;i+=st)ofs.push([j*W+i,j*tw+i]);
     const n=ofs.length,tz=[[],[],[]],tm=[0,0,0];
     for(let c=0;c<3;c++){let m=0;for(const o of ofs){m+=T[c][o[1]]}m/=n;tm[c]=m;for(const o of ofs){tz[c].push(T[c][o[1]]-m)}}
-    // norma total del template (suma dels 3 canals)
     let tn2=0; for(let c=0;c<3;c++) for(const v of tz[c]) tn2+=v*v;
     const tn=Math.sqrt(tn2); if(tn<1) continue;
     const pos=Math.max(2,Math.round(Math.min(tw,th)/14));
@@ -316,7 +371,6 @@ function runRep(){
       const cc=c.getContext('2d',{willReadFrequently:true}); cc.drawImage(base,0,0,W,H);
       const P=planes(cc.getImageData(0,0,W,H).data,W,H);
       const t={x:tpl.x*s,y:tpl.y*s,w:tpl.w*s,h:tpl.h*s};
-      // Guardem tots els candidats per sobre del floor (perquè el slider pugui mostrar-ne més sense recalcular)
       const raw=matchColor(P,W,H,t,REP_SCALES,REP_FLOOR,140).map(h=>({x:h.x/s,y:h.y/s,w:h.w/s,h:h.h/s,score:h.score}));
       repCache={raw,s};
       repC=raw.slice();
@@ -343,7 +397,6 @@ function drawRep(fs){
   ctx.setLineDash([]);
   total(n);
 }
-// BUGFIX important: en moure el slider, recalcula la llista visibles des del cache
 $('sim').oninput=()=>{
   const thr=+$('sim').value/100; $('simv').textContent=$('sim').value+'%';
   if(repCache){
@@ -433,7 +486,7 @@ function ctrlAt(g,W,H,bb,lag,alongX){
   const r=[shiftNCC(g,W,H,bb,lag*0.5,alongX),shiftNCC(g,W,H,bb,lag*1.5,alongX)].filter(v=>v>=-0.5);
   return r.length?r.reduce((s,v)=>s+v,0)/r.length:0;
 }
-const SIM_MIN=0.62, EXC_MIN=0.12; // més estrictes
+const SIM_MIN=0.62, EXC_MIN=0.12;
 function autoAnalyze(d,W,H){
   const N=W*H;
   const bw=Math.max(2,Math.round(Math.min(W,H)*0.03)), bs=[[],[],[]];
@@ -499,7 +552,14 @@ function autoAnalyze(d,W,H){
   else if(best('per')>=0) chosen=best('per');
   else if(best('scan')>=0) chosen=best('scan');
   else if(best('cc')>=0) chosen=best('cc');
-  return {cands,chosen,merged,full,plain,bgFrac,fgFrac,bbFrac,ccCount,thr,bg,uncertain:chosen<0};
+  // Pista de graella: si el "per" té dues direccions fortes o l'escena és clarament regular,
+  // suggerim el mode graella
+  let gridHint=false;
+  if(bb){
+    const pv=periodic(gray,W,H,bb,true), ph=periodic(gray,W,H,bb,false);
+    if(pv&&ph&&pv.r>=0.35&&ph.r>=0.35&&pv.count>=2&&ph.count>=2) gridHint=true;
+  }
+  return {cands,chosen,merged,full,plain,bgFrac,fgFrac,bbFrac,ccCount,thr,bg,uncertain:chosen<0,gridHint};
 }
 
 const AM=360;
@@ -522,16 +582,17 @@ function runAuto(){
 }
 function refreshAuto(){
   const box=$('autoChips'); box.innerHTML='';
-  const goRep=$('goRep');
+  const goRep=$('goRep'), goGrid=$('goGrid');
   if(!autoRes||autoRes.uncertain){
-    goRep.hidden=false; draw();
+    goRep.hidden=false; goGrid.hidden=!(autoRes&&autoRes.gridHint); draw();
     $('autoWhy').textContent='';
-    msg('No hi ha un grup clar d\'elements iguals. Probablement hi ha objectes de tipus diferents. Tria\'n un i busco els que s\'hi assemblen.');
+    msg('No hi ha un grup clar d\'elements iguals. Probablement hi ha objectes de tipus diferents. Tria\'n un i busco els que s\'hi assemblen.'+(autoRes&&autoRes.gridHint?' O sembla una graella: prova el mode Graella.':''));
     return;
   }
   const chosen=autoRes.cands[autoSel];
   const weak=chosen.kind==='cc'&&chosen.count===1;
   goRep.hidden=!weak;
+  goGrid.hidden=!autoRes.gridHint;
   const seen=new Set(), items=[];
   [autoSel].concat(autoRes.cands.map((c,i)=>i)).forEach(i=>{ const c=autoRes.cands[i]; if(!c.valid||seen.has(c.count)) return; seen.add(c.count); items.push([i,c]); });
   items.sort((a,b)=>a[1].count-b[1].count).forEach(([i,c])=>{
@@ -574,25 +635,208 @@ function drawAuto(fs){
 }
 
 $('goRep').onclick=()=>setMode('rep');
+$('goGrid').onclick=()=>setMode('grid');
+
+/* ---------- Mode graella ---------- */
+// Detecta files/columnes dins la caixa donada, a partir de la imatge base.
+// Retorna {rows, cols, xLines, yLines, x0,y0,x1,y1, score}
+function detectGrid(box, relax){
+  if(!hasImg||!box) return null;
+  const W=base.width, H=base.height;
+  const x0=Math.max(0,Math.min(box.x0,box.x1)), x1=Math.min(W,Math.max(box.x0,box.x1));
+  const y0=Math.max(0,Math.min(box.y0,box.y1)), y1=Math.min(H,Math.max(box.y0,box.y1));
+  const w=x1-x0, h=y1-y0;
+  if(w<20||h<20) return null;
+  // Anàlisi sobre una versió escalada per anar ràpid
+  const s=Math.min(1, 360/Math.max(w,h));
+  const c=document.createElement('canvas'); c.width=Math.max(8,Math.round(w*s)); c.height=Math.max(8,Math.round(h*s));
+  const cc=c.getContext('2d',{willReadFrequently:true}); cc.drawImage(base, x0, y0, w, h, 0, 0, c.width, c.height);
+  const I=cc.getImageData(0,0,c.width,c.height).data;
+  const W2=c.width, H2=c.height, N=W2*H2;
+  const gray=new Float32Array(N);
+  for(let i=0;i<N;i++){ const j=i*4; gray[i]=0.299*I[j]+0.587*I[j+1]+0.114*I[j+2]; }
+  // energia de vores verticals (columnes) i horitzontals (files)
+  const ev=new Float64Array(W2), eh=new Float64Array(H2);
+  for(let y=1;y<H2-1;y++) for(let x=1;x<W2-1;x++){
+    const g=gray[y*W2+x];
+    ev[x]+=Math.abs(gray[y*W2+x+1]-gray[y*W2+x-1]);
+    eh[y]+=Math.abs(gray[(y+1)*W2+x]-gray[(y-1)*W2+x]);
+  }
+  const smooth=(a)=>{ const b=new Float64Array(a.length); for(let i=0;i<a.length;i++){ const p=a[Math.max(0,i-1)],q=a[Math.min(a.length-1,i+1)]; b[i]=(p+2*a[i]+q)/4; } const m=b.reduce((s,v)=>s+v,0)/b.length; for(let i=0;i<b.length;i++) b[i]-=m; return b; };
+  const evs=smooth(ev), ehs=smooth(eh);
+  // període dominant en cada direcció
+  const period=(arr)=>{
+    const L=arr.length; let e0=0; for(let i=0;i<L;i++) e0+=arr[i]*arr[i]; e0/=L; if(e0<=0) return null;
+    const lmin=Math.max(4,Math.round(L/40)), lmax=Math.floor(L/1.9); if(lmax<=lmin+1) return null;
+    let bestL=0, bestR=-1;
+    for(let l=lmin;l<=lmax;l++){ let s=0; for(let i=0;i+l<L;i++) s+=arr[i]*arr[i+l]; const R=(s/(L-l))/e0; if(R>bestR){bestR=R;bestL=l;} }
+    if(bestR<0.15) return null;
+    return {L:bestL, R:bestR, n:Math.max(1,Math.round(L/bestL))};
+  };
+  const pv=period(evs), ph=period(ehs);
+  const tolR = relax?0.25:0.4;
+  let cols = pv?pv.n:1, rows = ph?ph.n:1;
+  // sanitat: evita comptes absurds
+  if(cols>60) cols=Math.round(cols/2);
+  if(rows>60) rows=Math.round(rows/2);
+  if(cols<1) cols=1; if(rows<1) rows=1;
+  // score combinat: força dels pics i coherència
+  let score=0, wsum=0;
+  if(pv){ score+=Math.min(1,pv.R/ (relax?0.3:0.5)); wsum++; }
+  if(ph){ score+=Math.min(1,ph.R/ (relax?0.3:0.5)); wsum++; }
+  score = wsum?score/wsum:0;
+  return {
+    rows, cols, score,
+    x0:box.x0, y0:box.y0, x1:box.x1, y1:box.y1,
+    pv, ph,
+    // informació per debug
+    evs, ehs, W2, H2
+  };
+}
+function gridTap(x,y){
+  if(!gridBox){
+    if(!gridCorner){ gridCorner=[x,y]; draw(); msg('Ara toca la cantonada inferior dreta de l\'última cel·la de la graella.'); return; }
+    const bx0=Math.min(gridCorner[0],x), by0=Math.min(gridCorner[1],y);
+    const bx1=Math.max(gridCorner[0],x), by1=Math.max(gridCorner[1],y);
+    if(bx1-bx0<20||by1-by0<20){ gridCorner=null; draw(); msg('Marc massa petit. Torna a tocar la cantonada superior esquerra.'); return; }
+    gridBox={x0:bx0,y0:by0,x1:bx1,y1:by1};
+    gridCorner=null;
+    // detectar automàticament files/columnes
+    busy(true,'Detectant files i columnes…');
+    setTimeout(()=>{
+      try{
+        gridDetected = detectGrid(gridBox, $('gridTol').checked);
+        gridAuto = gridDetected ? {rows:gridDetected.rows, cols:gridDetected.cols} : {rows:0, cols:0};
+        $('rows').value = gridAuto.rows; $('cols').value = gridAuto.cols;
+        $('rowsv').textContent = gridAuto.rows||'auto';
+        $('colsv').textContent = gridAuto.cols||'auto';
+        updateGridInfo();
+      } finally { busy(false); runGrid(); }
+    },30);
+    return;
+  }
+  // si ja hi ha gridBox, tocar serveix per començar de nou (més intuïtiu que no fer res)
+  gridBox=null; gridCorner=[x,y]; draw(); msg('Torna a marcar la cantonada inferior dreta de la nova graella.');
+}
+function updateGridInfo(){
+  const n = gridActual();
+  const el=$('gridInfo');
+  if(!gridBox){ el.textContent='Encara no hi ha cap graella marcada.'; return; }
+  el.textContent = (n?n.count+' unitats':'—') + (gridDetected?' · detecció automàtica':' · ajust manual');
+}
+function gridActual(){
+  if(!gridBox) return null;
+  let rows=+$('rows').value, cols=+$('cols').value;
+  if(!rows && gridAuto) rows=gridAuto.rows;
+  if(!cols && gridAuto) cols=gridAuto.cols;
+  // si tot és zero, intentem detecció relaxada
+  if(!rows && !cols && gridDetected){ rows=gridDetected.rows; cols=gridDetected.cols; }
+  if(!rows || !cols) return null;
+  const {x0,y0,x1,y1}=gridBox;
+  const cw=(x1-x0)/cols, ch=(y1-y0)/rows;
+  const cells=[];
+  for(let r=0;r<rows;r++) for(let c=0;c<cols;c++){
+    cells.push({x:x0+c*cw, y:y0+r*ch, w:cw, h:ch, cx:x0+(c+0.5)*cw, cy:y0+(r+0.5)*ch});
+  }
+  return {rows, cols, cells, count:rows*cols};
+}
+function runGrid(){
+  if(!hasImg||!gridBox) return;
+  // recalcular detecció si l'usuari ha triat "auto" i no tenim res
+  if(!gridAuto && !gridDetected){
+    gridDetected=detectGrid(gridBox, $('gridTol').checked);
+    gridAuto=gridDetected?{rows:gridDetected.rows, cols:gridDetected.cols}:{rows:0, cols:0};
+    $('rows').value=gridAuto.rows; $('cols').value=gridAuto.cols;
+    $('rowsv').textContent=gridAuto.rows||'auto'; $('colsv').textContent=gridAuto.cols||'auto';
+  }
+  updateGridInfo();
+  draw();
+  const g=gridActual();
+  msg(g?('Graella '+g.rows+' × '+g.cols+' = '+g.count+' unitats. Si no quadra, ajusta Files/Columnes.'):'No he pogut deduir files i columnes. Mou els sliders.');
+}
+function drawGrid(fs){
+  if(!gridBox){ if(gridCorner){ ctx.fillStyle='#ffb020'; ctx.beginPath(); ctx.arc(gridCorner[0],gridCorner[1],fs*.5,0,7); ctx.fill(); } total(0); return; }
+  const {x0,y0,x1,y1}=gridBox;
+  ctx.strokeStyle='#3ddc97'; ctx.lineWidth=Math.max(2,view.width/300);
+  ctx.strokeRect(x0,y0,x1-x0,y1-y0);
+  const g=gridActual();
+  if(!g){ total(0); return; }
+  ctx.setLineDash([6,6]); ctx.strokeStyle='#ffb020aa';
+  for(let c=1;c<g.cols;c++){ const x=x0+c*(x1-x0)/g.cols; ctx.beginPath(); ctx.moveTo(x,y0); ctx.lineTo(x,y1); ctx.stroke(); }
+  for(let r=1;r<g.rows;r++){ const y=y0+r*(y1-y0)/g.rows; ctx.beginPath(); ctx.moveTo(x0,y); ctx.lineTo(x1,y); ctx.stroke(); }
+  ctx.setLineDash([]);
+  // números per cel·la (petits si n'hi ha molts)
+  const small = g.cells.length>30;
+  g.cells.forEach((c,i)=>{ label(String(i+1), c.cx, c.cy, small? fs*.7: fs); });
+  total(g.count);
+}
+$('rows').oninput=()=>{ $('rowsv').textContent=$('rows').value||'auto'; runGrid(); };
+$('cols').oninput=()=>{ $('colsv').textContent=$('cols').value||'auto'; runGrid(); };
+$('gridTol').onchange=()=>{
+  if(!gridBox) return;
+  gridDetected=detectGrid(gridBox, $('gridTol').checked);
+  if(gridDetected){
+    gridAuto={rows:gridDetected.rows, cols:gridDetected.cols};
+    if(!+$('rows').value){ $('rows').value=gridAuto.rows; $('rowsv').textContent=gridAuto.rows; }
+    if(!+$('cols').value){ $('cols').value=gridAuto.cols; $('colsv').textContent=gridAuto.cols; }
+  }
+  runGrid();
+};
+$('resetGrid').onclick=()=>{
+  gridBox=null; gridCorner=null; gridAuto=null; gridDetected=null;
+  $('rows').value=0; $('cols').value=0; $('rowsv').textContent='auto'; $('colsv').textContent='auto';
+  adj=0; $('adjv').textContent='±0';
+  if(hasImg){ draw(); msg('Toca la cantonada superior esquerra de la primera cel·la.'); }
+  updateGridInfo();
+};
 
 /* ---------- Dibuix ---------- */
 function draw(){
   if(!hasImg) return;
-  ctx.drawImage(base,0,0);
-  const lw=Math.max(2,view.width/300), fs=Math.max(12,view.width/45);
+  // Composició: si hi ha zoom, dibuixem la regió de zoom escalada al canvas
+  if(zoom.active && (zoom.cx||zoom.cy||zoom.pendingTap)){
+    const W=base.width, H=base.height;
+    const vw=view.width, vh=view.height, s=zoom.scale;
+    const sw=vw/s, sh=vh/s;
+    const x0=clamp(zoom.cx - sw/2, 0, Math.max(0,W-sw));
+    const y0=clamp(zoom.cy - sh/2, 0, Math.max(0,H-sh));
+    ctx.imageSmoothingEnabled = true;
+    ctx.drawImage(base, x0, y0, sw, sh, 0, 0, vw, vh);
+    // El dibuix d'anotacions s'ha de fer amb el mateix transform: traslladar i escalar
+    ctx.save();
+    // volem que (x0,y0) de la imatge base es correspongui amb (0,0) del canvas, i escalar per s
+    ctx.setTransform(s, 0, 0, s, -x0*s, -y0*s);
+    drawOverlay();
+    ctx.restore();
+    ctx.setTransform(1,0,0,1,0,0);
+  } else {
+    ctx.setTransform(1,0,0,1,0,0);
+    ctx.drawImage(base,0,0);
+    drawOverlay();
+  }
+}
+// Dibuixa les anotacions del mode actiu. S'executa amb el transform ja aplicat.
+function drawOverlay(){
+  const lwBase = Math.max(2,view.width/300);
+  // com que apliquem transform d'escala quan hi ha zoom, ajustem lineWidth perquè es vegi igual
+  const s = (zoom.active && (zoom.cx||zoom.cy||zoom.pendingTap)) ? zoom.scale : 1;
+  const lw = lwBase / s;
+  const fs = Math.max(12,view.width/45) / s;
   ctx.lineWidth=lw; ctx.font='700 '+fs+'px system-ui,sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
   if(mode==='auto'){ drawAuto(fs); }
   else if(mode==='rep'){ drawRep(fs); }
-  else {
-    if($('showmask').checked&&maskCv.width) ctx.drawImage(maskCv,0,0);
-    let k=0;
-    blobs.forEach(b=>{
-      ctx.strokeStyle='#ffb020'; ctx.beginPath();
-      ctx.arc(b.cx,b.cy,Math.max(fs*.9,Math.sqrt(b.area/Math.PI)*1.1),0,7); ctx.stroke();
-      k+=b.n; label(b.n>1?'×'+b.n:String(k),b.cx,b.cy,fs);
-    });
-    total(colorTotal);
-  }
+  else if(mode==='col'){ drawColor(fs); }
+  else if(mode==='grid'){ drawGrid(fs); }
+}
+function drawColor(fs){
+  if($('showmask').checked&&maskCv.width) ctx.drawImage(maskCv,0,0);
+  let k=0;
+  blobs.forEach(b=>{
+    ctx.strokeStyle='#ffb020'; ctx.beginPath();
+    ctx.arc(b.cx,b.cy,Math.max(fs*.9,Math.sqrt(b.area/Math.PI)*1.1),0,7); ctx.stroke();
+    k+=b.n; label(b.n>1?'×'+b.n:String(k),b.cx,b.cy,fs);
+  });
+  total(colorTotal);
 }
 function label(t,x,y,fs){
   const w=ctx.measureText(t).width+fs*.6;
@@ -610,9 +854,28 @@ $('plus').onclick=()=>{adj++;updateAdj()}; $('minus').onclick=()=>{adj--;updateA
 /* ---------- Toc sobre la imatge ---------- */
 view.addEventListener('click',e=>{
   if(!hasImg) return;
-  const r=view.getBoundingClientRect(), x=(e.clientX-r.left)*view.width/r.width, y=(e.clientY-r.top)*view.height/r.height;
+  const r=view.getBoundingClientRect();
+  const vx=(e.clientX-r.left)*view.width/r.width;
+  const vy=(e.clientY-r.top)*view.height/r.height;
+
+  // Gestió del zoom: si està actiu i encara no hi ha centre, el primer toc centra el zoom
+  if(zoom.active && !zoom.pendingTap && !(zoom.cx||zoom.cy)){
+    // centre del zoom = punt tocat (en coordenades base)
+    const [bx,by]=[vx,vy]; // encara no hi ha transform
+    zoom.cx=clamp(bx,0,base.width); zoom.cy=clamp(by,0,base.height);
+    zoom.pendingTap=null;
+    $('zoomOut').hidden=false;
+    draw();
+    msg('Zoom actiu. Toca un element per actuar-hi, o "Veure tot" per sortir.');
+    return;
+  }
+  // A partir d'aquí actuem sobre la imatge base (amb o sense zoom)
+  const [x,y]=viewToBase(vx,vy);
+
   if(mode==='auto') return;
   if(mode==='rep'){ repTap(x,y); return; }
+  if(mode==='grid'){ gridTap(x,y); return; }
+  // color
   {
     const d=bctx.getImageData(Math.max(0,x-2)|0,Math.max(0,y-2)|0,5,5).data; let r0=0,g=0,b=0,c=d.length/4;
     for(let i=0;i<d.length;i+=4){r0+=d[i];g+=d[i+1];b+=d[i+2]}
