@@ -105,7 +105,7 @@
     <div class="msg" style="margin:0">Ideal per a coses petites i iguals (pastilles, monedes, cargols, llavors…) sobre un fons diferent. <b>Toca un exemplar a la imatge</b> per triar-ne el color.</div>
     <div class="row" style="align-items:center;flex-wrap:nowrap"><div class="sw" id="sw"></div><div class="ctl" style="flex:1"><span>Tolerància de color: <b id="tolv">60</b></span><input id="tol" type="range" min="10" max="180" value="60"></div></div>
     <div class="ctl"><span>Mida mínima de l'objecte: <b id="minv">60</b> px</span><input id="min" type="range" min="5" max="3000" value="60"></div>
-    <div class="ctl"><span>Unir parts separades (dibuixos, etiquetes…): <b id="joinv">9</b> px</span><input id="join" type="range" min="0" max="40" value="9"></div>
+    <div class="ctl"><span>Unir parts separades (dibuixos, etiquetes…): <b id="joinv">3</b> px</span><input id="join" type="range" min="0" max="40" value="3"></div>
     <label class="chk"><input type="checkbox" id="split" checked> Separar objectes enganxats (estima per àrea)</label>
     <label class="chk"><input type="checkbox" id="showmask"> Mostrar la màscara de color</label>
   </section>
@@ -113,8 +113,8 @@
   <section class="panel" id="pGrid" hidden>
     <div class="msg" style="margin:0">Per a elements <b>alineats en files i columnes</b>. Toca <b>dues vegades</b> la imatge: la cantonada <b>superior esquerra</b> de la primera cel·la i la <b>inferior dreta</b> de l'última. L'app detecta files × columnes; pots ajustar-les amb els sliders.</div>
     <div class="gridctl">
-      <div class="ctl"><span>Files: <b id="rowsv">auto</b></span><input id="rows" type="range" min="0" max="50" value="0"></div>
-      <div class="ctl"><span>Columnes: <b id="colsv">auto</b></span><input id="cols" type="range" min="0" max="50" value="0"></div>
+      <div class="ctl"><span>Files: <b id="rowsv">auto</b></span><input id="rows" type="range" min="0" max="60" value="0"></div>
+      <div class="ctl"><span>Columnes: <b id="colsv">auto</b></span><input id="cols" type="range" min="0" max="60" value="0"></div>
     </div>
     <label class="chk"><input type="checkbox" id="gridTol"> Graella una mica irregular (relaxa tolerància)</label>
     <div class="msg" id="gridInfo" style="margin:0"></div>
@@ -229,18 +229,11 @@ function closeMask(mask,W,H,r){
       if(I[y1*W1+x1]-I[y0*W1+x1]-I[y1*W1+x0]+I[y0*W1+x0]===(y1-y0)*(x1-x0)) out[y*W+x]=1; } }
   return out;
 }
-function runColor(){
-  if(!hasImg||!picked) return;
-  const W=base.width,H=base.height,N=W*H, d=bctx.getImageData(0,0,W,H).data;
-  const tol=+$('tol').value, t2=tol*tol, [pr,pg,pb]=picked;
-  $('tolv').textContent=tol; $('minv').textContent=$('min').value; $('joinv').textContent=$('join').value;
+function colorPass(d,W,H,t2,pr,pg,pb,jr){
+  const N=W*H;
   let mask=new Uint8Array(N);
   for(let i=0;i<N;i++){const j=i*4,a=d[j]-pr,b=d[j+1]-pg,c=d[j+2]-pb; if(a*a+b*b+c*c<=t2) mask[i]=1;}
-  const jr=+$('join').value; if(jr>0) mask=closeMask(mask,W,H,jr);
-  maskCv.width=W;maskCv.height=H;
-  const mi=maskCv.getContext('2d').createImageData(W,H);
-  for(let i=0;i<N;i++) if(mask[i]){const j=i*4;mi.data[j]=255;mi.data[j+1]=0;mi.data[j+2]=120;mi.data[j+3]=130;}
-  maskCv.getContext('2d').putImageData(mi,0,0);
+  if(jr>0) mask=closeMask(mask,W,H,jr);
   const seen=new Uint8Array(N), stack=new Int32Array(N), lab=new Int32Array(N).fill(-1), all=[];
   const onBorder=(x,y)=> x<=1||y<=1||x>=W-2||y>=H-2;
   for(let s=0;s<N;s++){
@@ -267,6 +260,27 @@ function runColor(){
       const l=lab[y*W+x]; if(l>=0) ref=all[l];
     }
   }
+  return {mask,all,ref};
+}
+function runColor(){
+  if(!hasImg||!picked) return;
+  const W=base.width,H=base.height,N=W*H, d=bctx.getImageData(0,0,W,H).data;
+  const tol=+$('tol').value, t2=tol*tol, [pr,pg,pb]=picked;
+  $('tolv').textContent=tol; $('minv').textContent=$('min').value; $('joinv').textContent=$('join').value;
+  // Si en unir parts l'exemplar s'enganxa amb el fons o amb els veïns, es prova amb un valor més baix
+  let jr=+$('join').value, reduced=false, res;
+  for(;;){
+    res=colorPass(d,W,H,t2,pr,pg,pb,jr);
+    const bad=!res.ref||res.ref.area>0.15*N||res.ref.touchesBorder;
+    if(bad&&jr>0){ jr=jr>3?Math.floor(jr/2):0; reduced=true; continue; }
+    break;
+  }
+  if(reduced){ $('join').value=jr; $('joinv').textContent=jr; }
+  const mask=res.mask, all=res.all, ref=res.ref;
+  maskCv.width=W;maskCv.height=H;
+  const mi=maskCv.getContext('2d').createImageData(W,H);
+  for(let i=0;i<N;i++) if(mask[i]){const j=i*4;mi.data[j]=255;mi.data[j+1]=0;mi.data[j+2]=120;mi.data[j+3]=130;}
+  maskCv.getContext('2d').putImageData(mi,0,0);
   blobs=[]; colorTotal=0;
   if(!ref){ draw(); colorMsg='No he trobat l\'element que has tocat amb aquest color. Puja la tolerància o toca un altre punt.'; msg(colorMsg); return; }
   if(ref.area>0.15*N){ draw(); colorMsg='Has tocat una zona molt gran (el fons, una paret…). Toca UN exemplar de les coses que vols comptar.'; msg(colorMsg); return; }
@@ -282,7 +296,7 @@ function runColor(){
   });
   colorTotal=blobs.reduce((s,b)=>s+b.n,0);
   draw();
-  colorMsg=colorTotal?('Compto les taques de mida semblant a l\'exemplar'+(ignored?' ('+ignored+' d\'altres mides/vora ignorades)':'')+'. Ajusta la tolerància si cal.'):'Res detectat amb aquest color: puja la tolerància o toca un altre exemplar.';
+  colorMsg=colorTotal?('Compto les taques de mida semblant a l\'exemplar'+(reduced?' (he reduït «Unir» a '+jr+' px perquè els exemplars s\'enganxaven)':'')+(ignored?' ('+ignored+' d\'altres mides/vora ignorades)':'')+'. Ajusta la tolerància si cal.'):'Res detectat amb aquest color: puja la tolerància o toca un altre exemplar.';
   msg(colorMsg);
 }
 ['tol','min','join'].forEach(id=>$(id).oninput=()=>{
@@ -296,7 +310,7 @@ $('showmask').onchange=draw;
 /* ---------- Mode plantilla ---------- */
 const RM=360;
 const REP_SCALES=[0.6,0.7,0.8,0.9,1,1.12,1.25,1.45];
-const REP_FLOOR=0.35, REP_MAX=20;
+const REP_FLOOR=0.35, REP_MAX=600;
 function planes(d,W,H){const P=[new Float32Array(W*H),new Float32Array(W*H),new Float32Array(W*H)];for(let i=0;i<W*H;i++){P[0][i]=d[i*4];P[1][i]=d[i*4+1];P[2][i]=d[i*4+2]}return P}
 function resizePlane(g,W,H,x0,y0,w,h,nw,nh){
   const o=new Float32Array(nw*nh);
@@ -494,9 +508,14 @@ function autoAnalyze(d,W,H){
   const med=a=>{a.sort((p,q)=>p-q);return a[a.length>>1]}; const bg=[med(bs[0]),med(bs[1]),med(bs[2])];
   let nearB=0,totB=0;
   for(let y=0;y<H;y++) for(let x=0;x<W;x++) if(x<bw||x>=W-bw||y<bw||y>=H-bw){ const j=(y*W+x)*4,a=d[j]-bg[0],b=d[j+1]-bg[1],c=d[j+2]-bg[2]; totB++; if(a*a+b*b+c*c<=45*45) nearB++; }
-  const bgFrac=nearB/totB, plain=bgFrac>=0.85;
+  const bgFrac=nearB/totB;
   let dist=new Float32Array(N), gray=new Float32Array(N);
   for(let i=0;i<N;i++){ const j=i*4,a=d[j]-bg[0],b=d[j+1]-bg[1],c=d[j+2]-bg[2]; dist[i]=Math.sqrt(a*a+b*b+c*c); gray[i]=0.299*d[j]+0.587*d[j+1]+0.114*d[j+2]; }
+  // textura de la vora: fusta, taula amb vetes, catifa… no són un fons llis encara que el color sigui semblant
+  const gb=boxBlur(gray,W,H,1); let te=0,tn=0;
+  for(let y=1;y<H-1;y++) for(let x=1;x<W-1;x++) if(x<bw||x>=W-bw||y<bw||y>=H-bw){
+    tn++; if(Math.abs(gb[y*W+x+1]-gb[y*W+x-1])+Math.abs(gb[(y+1)*W+x]-gb[(y-1)*W+x])>6) te++; }
+  const texFrac=tn?te/tn:0, plain=bgFrac>=0.85&&texFrac<0.15;
   dist=boxBlur(dist,W,H,1);
   const thr=Math.max(28,otsuThr(dist,442));
   const fg=new Uint8Array(N); let fgN=0; for(let i=0;i<N;i++){ fg[i]=dist[i]>thr?1:0; fgN+=fg[i]; }
@@ -552,6 +571,7 @@ function autoAnalyze(d,W,H){
   else if(best('per')>=0) chosen=best('per');
   else if(best('scan')>=0) chosen=best('scan');
   else if(best('cc')>=0) chosen=best('cc');
+  if(chosen>=0&&cands[chosen].kind==='cc'&&cands[chosen].count<2) chosen=-1;
   // Pista de graella: si el "per" té dues direccions fortes o l'escena és clarament regular,
   // suggerim el mode graella
   let gridHint=false;
@@ -664,17 +684,37 @@ function detectGrid(box, relax){
   }
   const smooth=(a)=>{ const b=new Float64Array(a.length); for(let i=0;i<a.length;i++){ const p=a[Math.max(0,i-1)],q=a[Math.min(a.length-1,i+1)]; b[i]=(p+2*a[i]+q)/4; } const m=b.reduce((s,v)=>s+v,0)/b.length; for(let i=0;i<b.length;i++) b[i]-=m; return b; };
   const evs=smooth(ev), ehs=smooth(eh);
-  // període dominant en cada direcció
-  const period=(arr)=>{
-    const L=arr.length; let e0=0; for(let i=0;i<L;i++) e0+=arr[i]*arr[i]; e0/=L; if(e0<=0) return null;
-    const lmin=Math.max(4,Math.round(L/40)), lmax=Math.floor(L/1.9); if(lmax<=lmin+1) return null;
-    let bestL=0, bestR=-1;
-    for(let l=lmin;l<=lmax;l++){ let s=0; for(let i=0;i+l<L;i++) s+=arr[i]*arr[i+l]; const R=(s/(L-l))/e0; if(R>bestR){bestR=R;bestL=l;} }
-    if(bestR<0.15) return null;
-    return {L:bestL, R:bestR, n:Math.max(1,Math.round(L/bestL))};
+  // Passada d'estimació del PAS (no del nombre exacte): així el marc pot ser força imprecís.
+  // 1) autocorrelació del perfil de vores -> candidats de període (el pas, el seu doble, la seva meitat...)
+  // 2) es tria el pas més petit que a més fa coincidir la imatge amb ella mateixa desplaçada un pas
+  //    (descarta la meitat del pas, on un element cauria sobre un buit)
+  const ncc=(dx,dy)=>{
+    let n=0,sa=0,sb=0,saa=0,sbb=0,sab=0;
+    for(let y=0;y+dy<H2;y++) for(let x=0;x+dx<W2;x++){
+      const a=gray[y*W2+x], b=gray[(y+dy)*W2+x+dx]; n++; sa+=a; sb+=b; saa+=a*a; sbb+=b*b; sab+=a*b;
+    }
+    if(n<30) return 0;
+    const va=saa-sa*sa/n, vb=sbb-sb*sb/n; if(va<n*2||vb<n*2) return 0;
+    return (sab-sa*sb/n)/Math.sqrt(va*vb);
   };
-  const pv=period(evs), ph=period(ehs);
-  const tolR = relax?0.25:0.4;
+  const period=(arr,alongX)=>{
+    const L=arr.length; let e0=0; for(let i=0;i<L;i++) e0+=arr[i]*arr[i]; e0/=L; if(e0<=0) return null;
+    const lmin=Math.max(4,Math.round(L/60)), lmax=Math.floor(L/1.9); if(lmax<=lmin+2) return null;
+    const R=new Float64Array(lmax+2);
+    for(let l=Math.max(1,lmin-1);l<=lmax+1;l++){ let sm=0; for(let i=0;i+l<L;i++) sm+=arr[i]*arr[i+l]; R[l]=(sm/(L-l))/e0; }
+    const pk=[]; for(let l=lmin;l<=lmax;l++) if(R[l]>R[l-1]&&R[l]>=R[l+1]&&R[l]>(relax?0.12:0.2)) pk.push(l);
+    if(!pk.length) return null;
+    let rmax=0; for(const l of pk) if(R[l]>rmax) rmax=R[l];
+    const strong=pk.filter(l=>R[l]>=0.6*rmax);
+    // candidats de nombre de cel·les (sense repetits)
+    const ns=[...new Set(strong.map(l=>Math.max(2,Math.round(L/l))))].sort((a,b)=>b-a);
+    const sc=ns.map(n=>{ const lag=Math.round(L/n); return lag<2?-1:(alongX?ncc(lag,0):ncc(0,lag)); });
+    const smax=Math.max(...sc);
+    let pick=ns[ns.length-1];                       // per defecte, el pas més gran
+    if(smax>0.1){ for(let k=0;k<ns.length;k++) if(sc[k]>=0.6*smax){ pick=ns[k]; break; } } // el pas més petit que quadra
+    return {L:L/pick, R:rmax, n:pick};
+  };
+  const pv=period(evs,true), ph=period(ehs,false);
   let cols = pv?pv.n:1, rows = ph?ph.n:1;
   // sanitat: evita comptes absurds
   if(cols>60) cols=Math.round(cols/2);
@@ -682,8 +722,8 @@ function detectGrid(box, relax){
   if(cols<1) cols=1; if(rows<1) rows=1;
   // score combinat: força dels pics i coherència
   let score=0, wsum=0;
-  if(pv){ score+=Math.min(1,pv.R/ (relax?0.3:0.5)); wsum++; }
-  if(ph){ score+=Math.min(1,ph.R/ (relax?0.3:0.5)); wsum++; }
+  if(pv){ score+=Math.min(1,pv.R); wsum++; }
+  if(ph){ score+=Math.min(1,ph.R); wsum++; }
   score = wsum?score/wsum:0;
   return {
     rows, cols, score,
@@ -757,7 +797,7 @@ function runGrid(){
 function drawGrid(fs){
   if(!gridBox){ if(gridCorner){ ctx.fillStyle='#ffb020'; ctx.beginPath(); ctx.arc(gridCorner[0],gridCorner[1],fs*.5,0,7); ctx.fill(); } total(0); return; }
   const {x0,y0,x1,y1}=gridBox;
-  ctx.strokeStyle='#3ddc97'; ctx.lineWidth=Math.max(2,view.width/300);
+  ctx.strokeStyle='#3ddc97';
   ctx.strokeRect(x0,y0,x1-x0,y1-y0);
   const g=gridActual();
   if(!g){ total(0); return; }
@@ -793,6 +833,7 @@ $('resetGrid').onclick=()=>{
 /* ---------- Dibuix ---------- */
 function draw(){
   if(!hasImg) return;
+  view.style.touchAction=(zoom.active&&(zoom.cx||zoom.cy))?'none':'manipulation';
   // Composició: si hi ha zoom, dibuixem la regió de zoom escalada al canvas
   if(zoom.active && (zoom.cx||zoom.cy||zoom.pendingTap)){
     const W=base.width, H=base.height;
@@ -852,8 +893,26 @@ function updateAdj(){ $('adjv').textContent=adj===0?'±0':(adj>0?'+'+adj:adj); i
 $('plus').onclick=()=>{adj++;updateAdj()}; $('minus').onclick=()=>{adj--;updateAdj()};
 
 /* ---------- Toc sobre la imatge ---------- */
+// Arrossegar amb zoom actiu = desplaçar la imatge (abans calia sortir i tornar a fer zoom)
+let drag=null, suppressClick=false;
+view.addEventListener('pointerdown',e=>{
+  if(hasImg&&zoom.active&&(zoom.cx||zoom.cy)) drag={x:e.clientX,y:e.clientY,cx:zoom.cx,cy:zoom.cy,moved:false,id:e.pointerId};
+});
+view.addEventListener('pointermove',e=>{
+  if(!drag||e.pointerId!==drag.id) return;
+  const dx=e.clientX-drag.x, dy=e.clientY-drag.y;
+  if(!drag.moved&&Math.hypot(dx,dy)<8) return;
+  drag.moved=true;
+  const r=view.getBoundingClientRect(), k=view.width/r.width/zoom.scale;
+  zoom.cx=clamp(drag.cx-dx*k,1,base.width); zoom.cy=clamp(drag.cy-dy*k,1,base.height);
+  draw();
+});
+const endDrag=()=>{ if(drag&&drag.moved){ suppressClick=true; setTimeout(()=>{suppressClick=false},60); } drag=null; };
+view.addEventListener('pointerup',endDrag); view.addEventListener('pointercancel',endDrag);
+
 view.addEventListener('click',e=>{
   if(!hasImg) return;
+  if(suppressClick){ suppressClick=false; return; }
   const r=view.getBoundingClientRect();
   const vx=(e.clientX-r.left)*view.width/r.width;
   const vy=(e.clientY-r.top)*view.height/r.height;
@@ -866,7 +925,7 @@ view.addEventListener('click',e=>{
     zoom.pendingTap=null;
     $('zoomOut').hidden=false;
     draw();
-    msg('Zoom actiu. Toca un element per actuar-hi, o "Veure tot" per sortir.');
+    msg('Zoom actiu. Arrossega per moure la imatge, toca un element per actuar-hi, o "Veure tot" per sortir.');
     return;
   }
   // A partir d'aquí actuem sobre la imatge base (amb o sense zoom)
