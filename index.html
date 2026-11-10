@@ -45,7 +45,7 @@
   .modes button{min-width:0;padding:10px 4px;font-size:.82rem}
   .gridctl{display:grid;grid-template-columns:1fr 1fr;gap:8px}
   .gridctl .ctl{display:grid;gap:4px}
-  .zoomwrap{position:absolute;top:8px;right:8px;display:flex;gap:6px;z-index:2}
+  .zoomwrap{position:absolute;top:8px;right:8px;display:flex;gap:6px;z-index:2;flex-wrap:wrap;justify-content:flex-end;max-width:calc(100% - 16px)}
   .zoomwrap button{min-width:0;flex:none;padding:6px 10px;font-size:.8rem;border-radius:8px;background:#0008;border-color:#fff4;color:#fff}
   .zoomwrap button.on{background:var(--acc3);color:#04203a;border-color:var(--acc3)}
 </style>
@@ -73,6 +73,8 @@
     <div id="empty">Encara no hi ha cap imatge.<br>Fes una foto o tria-la de la galeria.</div>
     <canvas id="view" hidden></canvas>
     <div class="zoomwrap">
+      <button id="zoneToggle" class="zoombtn">▭ Zona</button>
+      <button id="zoneOff" hidden>⤢ Tota la imatge</button>
       <button id="zoomToggle" class="zoombtn">🔍 Zoom</button>
       <button id="zoomOut" hidden>↺ Veure tot</button>
     </div>
@@ -127,6 +129,8 @@ const $=id=>document.getElementById(id);
 const view=$('view'), ctx=view.getContext('2d');
 const base=document.createElement('canvas'), bctx=base.getContext('2d',{willReadFrequently:true});
 const maskCv=document.createElement('canvas');
+const orig=document.createElement('canvas'), octx=orig.getContext('2d');
+let cropBox=null, areaMode=false, areaCorner=null, marks=[];
 const MAXD=1000;
 let hasImg=false, mode='auto';
 let picked=null, pickedAt=null, colorMsg='', blobs=[], adj=0, colorTotal=0;
@@ -142,25 +146,47 @@ function busy(on,t){ $('busy').classList.toggle('show',on); if(t)$('busyTxt').te
 function msg(t){ $('msg').textContent=t||''; }
 
 /* ---------- Càrrega d'imatge ---------- */
+function resetState(){
+  if(colorTimer){clearTimeout(colorTimer);colorTimer=null;}
+  colorTotal=0; autoRes=null; autoSel=0; tpl=null; corner=null; repC=[]; repOv={}; repCache=null; blobs=[]; adj=0; picked=null; pickedAt=null; marks=[];
+  gridBox=null; gridCorner=null; gridAuto=null; gridDetected=null;
+  zoom.active=false; zoom.cx=0; zoom.cy=0; zoom.pendingTap=null; $('zoomToggle').classList.remove('on'); $('zoomOut').hidden=true;
+  $('sw').style.background='#444';
+}
+// Zona de recompte: es treballa sobre una còpia retallada de l'original, així tots els modes només veuen la zona
+function setBase(box){
+  const w=box?box.w:orig.width, h=box?box.h:orig.height;
+  base.width=view.width=w; base.height=view.height=h;
+  bctx.drawImage(orig,box?box.x:0,box?box.y:0,w,h,0,0,w,h);
+  cropBox=box; $('zoneOff').hidden=!box;
+  resetState(); updateAdj(); run();
+}
 function loadFile(f,inp){
   if(!f) return;
   const url=URL.createObjectURL(f), im=new Image();
   im.onload=()=>{
     const s=Math.min(1,MAXD/Math.max(im.naturalWidth,im.naturalHeight));
-    base.width=view.width=Math.round(im.naturalWidth*s);
-    base.height=view.height=Math.round(im.naturalHeight*s);
-    bctx.drawImage(im,0,0,base.width,base.height);
+    orig.width=Math.round(im.naturalWidth*s);
+    orig.height=Math.round(im.naturalHeight*s);
+    octx.drawImage(im,0,0,orig.width,orig.height);
     URL.revokeObjectURL(url); if(inp) inp.value='';
     hasImg=true; $('empty').hidden=true; view.hidden=false;
-    if(colorTimer){clearTimeout(colorTimer);colorTimer=null;}
-    colorTotal=0; autoRes=null; autoSel=0; tpl=null; corner=null; repC=[]; repOv={}; repCache=null; blobs=[]; adj=0; picked=null; pickedAt=null;
-    gridBox=null; gridCorner=null; gridAuto=null; gridDetected=null;
-    zoom.active=false; zoom.pendingTap=null; $('zoomToggle').classList.remove('on'); $('zoomOut').hidden=true;
-    $('sw').style.background='#444'; updateAdj(); run();
+    areaMode=false; areaCorner=null; $('zoneToggle').classList.remove('on');
+    setBase(null);
   };
   im.onerror=()=>{ if(inp) inp.value=''; msg('No s\'ha pogut obrir la imatge.'); };
   im.src=url;
 }
+$('zoneToggle').onclick=()=>{
+  if(!hasImg) return;
+  areaMode=!areaMode; areaCorner=null; $('zoneToggle').classList.toggle('on',areaMode);
+  msg(areaMode?'Zona de recompte: toca la cantonada superior esquerra de la zona on vols comptar (la resta s\'ignora).':'');
+  draw();
+};
+$('zoneOff').onclick=()=>{
+  areaMode=false; areaCorner=null; $('zoneToggle').classList.remove('on');
+  setBase(null); msg('Torno a tota la imatge.');
+};
 $('cam').onchange=e=>loadFile(e.target.files[0],e.target);
 $('gal').onchange=e=>loadFile(e.target.files[0],e.target);
 
@@ -172,7 +198,7 @@ function setMode(m){
   $('pAuto').hidden=m!=='auto'; $('pRep').hidden=m!=='rep'; $('pCol').hidden=m!=='col'; $('pGrid').hidden=m!=='grid';
   // sortir del zoom en canviar de mode (per no quedar-se bloquejat)
   resetZoom(false);
-  adj=0; updateAdj(); run();
+  adj=0; marks=[]; updateAdj(); run();
 }
 $('mAuto').onclick=()=>setMode('auto'); $('mRep').onclick=()=>setMode('rep');
 $('mCol').onclick=()=>setMode('col'); $('mGrid').onclick=()=>setMode('grid');
@@ -364,7 +390,7 @@ function repTap(x,y){
   if(tpl){
     let best=-1,ba=1e18;
     repC.forEach((h,i)=>{ if(x>=h.x&&x<=h.x+h.w&&y>=h.y&&y<=h.y+h.h&&h.w*h.h<ba){best=i;ba=h.w*h.h;} });
-    if(best>=0){ repOv[best]=!repOn(best); draw(); }
+    if(best>=0){ repOv[best]=!repOn(best); draw(); } else fixTap(x,y);
     return;
   }
   if(!corner){ corner=[x,y]; draw(); msg('Ara toca la cantonada inferior dreta del mateix element.'); return; }
@@ -396,7 +422,7 @@ function runRep(){
 }
 function repMsg(){
   const on=repC.filter((h,i)=>repOn(i)).length, off=repC.length-on;
-  msg(on>1||off? 'Línia contínua = comptat. Línia discontínua = possible coincidència: tocar-la l\'afegeix, i tocar-ne una de comptada la treu.':'No s\'ha trobat cap altre element: baixa la semblança o tria una altra part de l\'element.');
+  msg(on>1||off? 'Línia contínua = comptat. Línia discontínua = possible coincidència: tocar-la l\'afegeix, i tocar-ne una de comptada la treu. Tocar un lloc buit hi posa una marca manual.':'No s\'ha trobat cap altre element: baixa la semblança o tria una altra part de l\'element.');
 }
 function drawRep(fs){
   if(tpl){ ctx.setLineDash([3,5]); ctx.strokeStyle='#fff'; ctx.strokeRect(tpl.x,tpl.y,tpl.w,tpl.h); ctx.setLineDash([]); }
@@ -606,7 +632,7 @@ function refreshAuto(){
   if(!autoRes||autoRes.uncertain){
     goRep.hidden=false; goGrid.hidden=!(autoRes&&autoRes.gridHint); draw();
     $('autoWhy').textContent='';
-    msg('No hi ha un grup clar d\'elements iguals. Probablement hi ha objectes de tipus diferents. Tria\'n un i busco els que s\'hi assemblen.'+(autoRes&&autoRes.gridHint?' O sembla una graella: prova el mode Graella.':''));
+    msg('No hi ha un grup clar d\'elements iguals. Probablement hi ha objectes de tipus diferents. Tria\'n un i busco els que s\'hi assemblen. També pots comptar a mà: toca cada element.'+(autoRes&&autoRes.gridHint?' O sembla una graella: prova el mode Graella.':''));
     return;
   }
   const chosen=autoRes.cands[autoSel];
@@ -621,7 +647,7 @@ function refreshAuto(){
     el.onclick=()=>{ autoSel=i; adj=0; $('adjv').textContent='±0'; refreshAuto(); };
     box.appendChild(el);
   });
-  $('autoWhy').textContent='Si no és el nombre correcte, toca una altra opció o corregeix-lo amb + / −.';
+  $('autoWhy').textContent=chosen.kind==='cc'?'Toca un cercle per treure\'l (torna a tocar-lo per recuperar-lo) o toca un lloc buit per afegir-hi una marca. També pots triar una altra opció o usar + / −.':'Si no és el nombre correcte, toca una altra opció o corregeix-lo amb + / −.';
   draw();
   msg(weak?'Només he trobat un sol bloc. Si hi ha diversos elements junts, tria\'n un i els busco.':'');
 }
@@ -630,8 +656,10 @@ function drawAuto(fs){
   const c=autoRes.cands[autoSel], k=1/autoS; let n=0;
   if(c.kind==='cc'){
     c.comps.forEach(b=>{
+      const rr=Math.max(fs*.9,Math.sqrt(b.area/Math.PI)*1.1*k);
+      if(b.off){ ctx.strokeStyle='#ffffff88'; ctx.setLineDash([5,5]); ctx.beginPath(); ctx.arc(b.cx*k,b.cy*k,rr,0,7); ctx.stroke(); ctx.setLineDash([]); return; }
       ctx.strokeStyle='#ffb020'; ctx.beginPath();
-      ctx.arc(b.cx*k,b.cy*k,Math.max(fs*.9,Math.sqrt(b.area/Math.PI)*1.1*k),0,7); ctx.stroke();
+      ctx.arc(b.cx*k,b.cy*k,rr,0,7); ctx.stroke();
       n+=b.n; label(b.n>1?'×'+b.n:String(n),b.cx*k,b.cy*k,fs);
     });
   } else if(c.kind==='scan'){
@@ -651,7 +679,7 @@ function drawAuto(fs){
     }
     ctx.setLineDash([]);
   }
-  total(c.count);
+  total(c.kind==='cc'?n:c.count);
 }
 
 $('goRep').onclick=()=>setMode('rep');
@@ -868,13 +896,17 @@ function drawOverlay(){
   else if(mode==='rep'){ drawRep(fs); }
   else if(mode==='col'){ drawColor(fs); }
   else if(mode==='grid'){ drawGrid(fs); }
+  if(mode!=='grid') drawMarks(fs);
+  if(areaMode&&areaCorner){ ctx.fillStyle='#5aa9ff'; ctx.beginPath(); ctx.arc(areaCorner[0],areaCorner[1],fs*.5,0,7); ctx.fill(); }
 }
 function drawColor(fs){
   if($('showmask').checked&&maskCv.width) ctx.drawImage(maskCv,0,0);
   let k=0;
   blobs.forEach(b=>{
+    const rr=Math.max(fs*.9,Math.sqrt(b.area/Math.PI)*1.1);
+    if(b.off){ ctx.strokeStyle='#ffffff88'; ctx.setLineDash([5,5]); ctx.beginPath(); ctx.arc(b.cx,b.cy,rr,0,7); ctx.stroke(); ctx.setLineDash([]); return; }
     ctx.strokeStyle='#ffb020'; ctx.beginPath();
-    ctx.arc(b.cx,b.cy,Math.max(fs*.9,Math.sqrt(b.area/Math.PI)*1.1),0,7); ctx.stroke();
+    ctx.arc(b.cx,b.cy,rr,0,7); ctx.stroke();
     k+=b.n; label(b.n>1?'×'+b.n:String(k),b.cx,b.cy,fs);
   });
   total(colorTotal);
@@ -884,8 +916,30 @@ function label(t,x,y,fs){
   ctx.fillStyle='#000c'; ctx.fillRect(x-w/2,y-fs*.7,w,fs*1.4);
   ctx.fillStyle='#fff'; ctx.fillText(t,x,y);
 }
+function drawMarks(fs){
+  ctx.strokeStyle='#5aa9ff'; ctx.setLineDash([]);
+  marks.forEach(m=>{ ctx.beginPath(); ctx.arc(m.x,m.y,fs*.9,0,7); ctx.stroke(); label('+',m.x,m.y,fs); });
+}
+function hitMark(x,y,r){ let b=-1,bd=r*r; marks.forEach((m,i)=>{ const d=(m.x-x)*(m.x-x)+(m.y-y)*(m.y-y); if(d<bd){bd=d;b=i;} }); return b; }
+// Correcció per toc (auto i plantilla): treu un element comptat o afegeix una marca manual on toquis
+function fixTap(x,y){
+  const fs=Math.max(12,view.width/45), mi=hitMark(x,y,fs*1.6);
+  if(mi>=0){ marks.splice(mi,1); draw(); return; }
+  let hit=null, bd=1e18;
+  if(mode==='auto'&&autoRes&&!autoRes.uncertain&&autoRes.cands[autoSel].kind==='cc'){
+    const k=1/autoS;
+    autoRes.cands[autoSel].comps.forEach(b=>{ const r=Math.max(fs*.9,Math.sqrt(b.area/Math.PI)*1.1*k), d=Math.hypot(b.cx*k-x,b.cy*k-y); if(d<=r&&d<bd){bd=d;hit=b;} });
+  }
+  if(hit) hit.off=!hit.off; else marks.push({x,y});
+  draw();
+}
+function findBlob(x,y){
+  const fs=Math.max(12,view.width/45); let hit=null,bd=1e18;
+  blobs.forEach(b=>{ const r=Math.max(fs*.9,Math.sqrt(b.area/Math.PI)*1.1), d=Math.hypot(b.cx-x,b.cy-y); if(d<=r&&d<bd){bd=d;hit=b;} });
+  return hit;
+}
 function total(n){
-  const t=Math.max(0,n+adj);
+  const t=Math.max(0,n+adj+(mode==='grid'?0:marks.length));
   $('total').textContent=t;
   $('what').textContent='unitats';
 }
@@ -931,10 +985,21 @@ view.addEventListener('click',e=>{
   // A partir d'aquí actuem sobre la imatge base (amb o sense zoom)
   const [x,y]=viewToBase(vx,vy);
 
-  if(mode==='auto') return;
+  if(areaMode){
+    if(!areaCorner){ areaCorner=[x,y]; draw(); msg('Ara toca la cantonada inferior dreta de la zona.'); return; }
+    const x0=Math.min(areaCorner[0],x), y0=Math.min(areaCorner[1],y), x1=Math.max(areaCorner[0],x), y1=Math.max(areaCorner[1],y);
+    areaCorner=null;
+    if(x1-x0<30||y1-y0<30){ draw(); msg('Zona massa petita. Torna a tocar la cantonada superior esquerra.'); return; }
+    areaMode=false; $('zoneToggle').classList.remove('on');
+    const ox=cropBox?cropBox.x:0, oy=cropBox?cropBox.y:0;
+    setBase({x:ox+Math.round(x0),y:oy+Math.round(y0),w:Math.round(x1-x0),h:Math.round(y1-y0)});
+    return;
+  }
+  if(mode==='auto'){ if(autoRes) fixTap(x,y); return; }
   if(mode==='rep'){ repTap(x,y); return; }
   if(mode==='grid'){ gridTap(x,y); return; }
-  // color
+  // color: tocar un exemplar ja comptat el treu (o el torna a posar); tocar-ne un altre en tria el color
+  if(blobs.length){ const hb=findBlob(x,y); if(hb){ hb.off=!hb.off; colorTotal=blobs.reduce((s,b)=>s+(b.off?0:b.n),0); draw(); return; } }
   {
     const d=bctx.getImageData(Math.max(0,x-2)|0,Math.max(0,y-2)|0,5,5).data; let r0=0,g=0,b=0,c=d.length/4;
     for(let i=0;i<d.length;i+=4){r0+=d[i];g+=d[i+1];b+=d[i+2]}
